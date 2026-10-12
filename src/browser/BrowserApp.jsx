@@ -5,11 +5,12 @@ import { Button } from '@/components/ui/button';
 import { Diagnostics } from '@/components/Diagnostics';
 import { Conversation } from '@/components/Conversation';
 import { applyCaptionPatch } from './caption-updates';
-import { validateModelFiles, downloadModels, MODEL_CACHE, modelProfiles } from './model-import';
+import { validateModelFiles, downloadModels, MODEL_CACHE, modelProfiles, speakerModelProfiles } from './model-import';
 import { openModelStore, deleteModelStore } from './model-storage';
 import { renameSpeaker, transcriptText } from './speaker-names';
 import { CaptionSetup } from './CaptionSetup';
 import { TableMode } from './TableMode';
+import { captionDefaults, captionModelEntries, speechOnlyDescription } from './caption-options';
 import { InferenceClient } from './inference-client';
 
 export default function BrowserApp() {
@@ -17,15 +18,22 @@ export default function BrowserApp() {
   const openSettings = () => settingsDialog.current?.showModal();
   const [enteredConversation, setEnteredConversation] = useState(false);
   const [viewMode, setViewMode] = useState('flow');
-  const [modelProfile, setModelProfile] = useState('standard');
-  const modelEntries = modelProfiles[modelProfile].entries;
+  const [defaults] = useState(captionDefaults);
+  const [speakerDtype, setSpeakerDtype] = useState('q4');
+  const [speakerDetection, setSpeakerDetection] = useState(defaults.speakerDetection);
+  const [modelProfile, setModelProfile] = useState(defaults.modelProfile);
+  const modelEntries = captionModelEntries(modelProfiles[modelProfile], speakerDetection, speakerModelProfiles[speakerDtype].entries);
+  function changeSpeakerDetection(enabled) {
+    setModelFiles(null); setSpeakerDetection(enabled);
+    if (!enabled) setViewMode('flow');
+  }
   const modelDownloadMB = Math.ceil(modelEntries.reduce((sum, file) => sum + file.size, 0) / 1e6);
   const panel = useRef(), fullscreenButton = useRef();
   const [fullscreen, setFullscreen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   function chooseMode(mode) {
     // Reveal the panel synchronously while this click still has user activation.
-    flushSync(() => { setViewMode(mode); setEnteredConversation(true); });
+    flushSync(() => { setViewMode(speakerDetection ? mode : 'flow'); setEnteredConversation(true); });
     void toggleFullscreen();
   }
   async function toggleFullscreen() {
@@ -114,7 +122,7 @@ export default function BrowserApp() {
       finally { if (active) setChecking(false); }
     })();
     return () => { active = false; controller.abort(); };
-  }, [modelProfile]);
+  }, [modelProfile, speakerDetection, speakerDtype]);
   async function importModels(event) {
     setChecking(true); setModelFiles(null); setError('');
     try { setModelFiles(await validateModelFiles([...event.target.files], setStatus, modelEntries)); setStatus('Models verified. Ready to load.'); }
@@ -127,8 +135,8 @@ export default function BrowserApp() {
   const [session, setSession] = useState({ id: 'browser', segments: [] }), [holding, setHolding] = useState(false), [held, setHeld] = useState(null);
   const [size, setSize] = useState(28), [contrast, setContrast] = useState(false), [announce, setAnnounce] = useState(false);
   const [level, setLevel] = useState(0), [lag, setLag] = useState(0), [speed, setSpeed] = useState(null);
-  const [deviceMode, setDeviceMode] = useState('webgpu');
-  const executionLabel = deviceMode === 'webgpu' ? 'WebGPU speech + speakers' : 'browser CPU';
+  const [deviceMode, setDeviceMode] = useState(defaults.device);
+  const executionLabel = `${deviceMode === 'webgpu' ? 'WebGPU' : 'browser CPU'} · ${speakerDetection ? 'speech + speakers' : 'speech only'}`;
   const [diagnostics, setDiagnostics] = useState(null), [threadBudget, setThreadBudget] = useState(6);
   const lastDiagnostic = useRef(0);
   const [cpuMode, setCpuMode] = useState('parallel');
@@ -159,12 +167,12 @@ export default function BrowserApp() {
   function load() {
     setDiagnostics(null); setError(''); setPhase('loading'); setStatus('Loading models into browser memory…');
     worker.current?.terminate();
-    const next = new InferenceClient({ mode:cpuMode, device:deviceMode, threadBudget:deviceMode === 'wasm' ? threadBudget : 4, jointMode:'logits' }); worker.current = next;
+    const next = new InferenceClient({ speakerDetection, mode:cpuMode, device:deviceMode, threadBudget:deviceMode === 'wasm' ? threadBudget : 4, jointMode:'logits' }); worker.current = next;
     next.onerror = event => fail(event.message || 'Browser inference worker failed');
     next.onmessage = ({ data }) => {
       if (data.diagnostics && (data.type !== 'ack' || performance.now() - lastDiagnostic.current > 1000)) { setDiagnostics(data.diagnostics); lastDiagnostic.current = performance.now(); }
       if (data.type === 'status') setStatus(data.message);
-      if (data.type === 'ready') { setPhase('ready'); setCpuMode(data.plan.mode); setStatus(`Ready · ${executionLabel} · ${data.plan.mode === 'parallel' ? 'separate workers' : 'shared worker'}`); }
+      if (data.type === 'ready') { setPhase('ready'); if (data.plan.mode !== 'speech-only') setCpuMode(data.plan.mode); setStatus(`Ready · ${executionLabel} · ${data.plan.mode === 'speech-only' ? 'speech worker' : data.plan.mode === 'parallel' ? 'separate workers' : 'shared worker'}`); }
       if (data.type === 'error') fail(data.message);
       if (data.type === 'warning') setError(data.message);
       if (data.type === 'captions') {
@@ -173,7 +181,7 @@ export default function BrowserApp() {
       if (data.type === 'ack') { setSpeed(data.elapsedMs && data.audioSeconds ? data.audioSeconds / (data.elapsedMs / 1000) : null); pending.current = Math.max(0, pending.current - data.samples); setLag(pending.current / 16000); }
       if (data.type === 'stopped') { setPhase('ready'); setStatus(`Conversation ended · ${executionLabel}`); }
     };
-    next.postMessage({ type: 'load', modelProfile, modelFiles, assetBase: new URL('.', document.baseURI).href });
+    next.postMessage({ type: 'load', speakerDtype, modelProfile, modelFiles, assetBase: new URL('.', document.baseURI).href });
   }
   async function selectMicrophones() {
     try {
@@ -209,6 +217,7 @@ export default function BrowserApp() {
       };
       await context.resume(); await enumerate();
       setPhase('listening'); setStatus(`Listening · ${executionLabel}`);
+      if (!speakerDetection) { setViewMode('flow'); setEnteredConversation(true); setExpanded(true); }
     } catch (e) { release(); setPhase('ready'); setError(e.message); }
   }
   async function stop() {
@@ -228,7 +237,7 @@ export default function BrowserApp() {
     release(); worker.current?.postMessage({ type: 'stop' });
   }
   function exportText() {
-    const url = URL.createObjectURL(new Blob([transcriptText(session)], { type: 'text/plain;charset=utf-8' }));
+    const url = URL.createObjectURL(new Blob([transcriptText(session, speakerDetection)], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a'); link.href = url; link.download = 'scribe-transcript.txt'; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -239,14 +248,14 @@ export default function BrowserApp() {
     <header className="app-header"><div className="brand"><span className="brand-symbol"><Captions aria-hidden="true"/></span><span>Scribe<span className="brand-subtitle">Local browser edition</span></span></div><div className="header-actions"><span className="local-badge"><ShieldCheck size={18} aria-hidden="true"/>On this device</span><Button variant="outline" onClick={openSettings}><Settings size={18}/>Settings</Button></div></header>
     <input ref={modelInput} id="model-folder" type="file" webkitdirectory="" multiple hidden disabled={phase !== 'unloaded' || checking} onChange={importModels}/>
     <main className={`workspace ${setupVisible ? 'setup-only' : ''}`}>
-      <section hidden={setupVisible} className="conversation-heading" aria-label="Conversation controls"><div><p className="eyebrow">HERE, TOGETHER</p><h1>Stay in the conversation.</h1><p className="heading-description">One reading flow. Voices marked in place.</p></div><div className="session-controls">
+      <section hidden={setupVisible} className="conversation-heading" aria-label="Conversation controls"><div><p className="eyebrow">HERE, TOGETHER</p><h1>Stay in the conversation.</h1><p className="heading-description">One reading flow.{speakerDetection ? ' Voices marked in place.' : ' Live captions without speaker detection.'}</p></div><div className="session-controls">
         {!setupVisible && <Button id="record" className="listen-button" disabled={!['ready', 'listening'].includes(phase)} onClick={live ? stop : start}>{live ? <Square size={18}/> : <Mic size={18}/>}<span id="record-label">{live ? 'Stop captions' : phase === 'ready' ? 'Start captions' : 'Finishing…'}</span></Button>}
       </div></section>
       {error && <div className="notice-panel notice-error" role="alert"><p>{error}</p></div>}
       {lag > 2 && live && <div className="notice-panel" role="status"><p>Captions are {lag.toFixed(1)} seconds behind. This device is processing pending speech.</p></div>}
-      {setupVisible && <CaptionSetup phase={phase} status={status} onLoad={load} onStart={start} onChooseMode={chooseMode} onStop={stop} onSettings={openSettings} tableMode={viewMode === 'table'} models={modelProfiles} modelProfile={modelProfile} onModelChange={value => { setModelFiles(null); setModelProfile(value); if (modelProfiles[value].cpuOnly) setDeviceMode('wasm'); }} checking={checking} downloading={downloading} hasModels={Boolean(modelFiles)} modelLabel={modelProfiles[modelProfile].label} downloadMB={modelDownloadMB} onDownload={download} onImport={() => modelInput.current?.click()} onCancel={() => downloadController.current?.abort()}/> }
+      {setupVisible && <CaptionSetup speakerDetection={speakerDetection} onSpeakerDetectionChange={changeSpeakerDetection} phone={defaults.phone} phase={phase} status={status} onLoad={load} onStart={start} onChooseMode={chooseMode} onStop={stop} onSettings={openSettings} tableMode={viewMode === 'table'} models={modelProfiles} modelProfile={modelProfile} onModelChange={value => { setModelFiles(null); setModelProfile(value); if (modelProfiles[value].cpuOnly) setDeviceMode('wasm'); }} checking={checking} downloading={downloading} hasModels={Boolean(modelFiles)} modelLabel={modelProfiles[modelProfile].label} downloadMB={modelDownloadMB} onDownload={download} onImport={() => modelInput.current?.click()} onCancel={() => downloadController.current?.abort()}/> }
       <div className="conversation-stage" hidden={setupVisible}>
-      <div className="mode-switch" role="group" aria-label="Conversation mode"><Button variant="ghost" aria-pressed={viewMode === 'flow'} onClick={() => setViewMode('flow')}>Reading mode</Button><Button variant="ghost" aria-pressed={viewMode === 'table'} onClick={() => setViewMode('table')}>Table mode</Button></div>
+      {speakerDetection && <div className="mode-switch" role="group" aria-label="Conversation mode"><Button variant="ghost" aria-pressed={viewMode === 'flow'} onClick={() => setViewMode('flow')}>Reading mode</Button><Button variant="ghost" aria-pressed={viewMode === 'table'} onClick={() => setViewMode('table')}>Table mode</Button></div>}
       <div className="workspace-grid browser-workspace"><section ref={panel} className={`caption-panel ${viewMode === 'table' ? 'table-mode-panel' : ''} ${expanded ? 'conversation-expanded' : ''}`} aria-labelledby="caption-title" role={expanded ? 'dialog' : undefined} aria-modal={expanded ? true : undefined}>
         <div className="caption-panel-header"><div className="caption-heading"><h2 id="caption-title">{viewMode === 'table' ? 'Table conversation' : 'Conversation'}</h2><span id="studio-status" className="listening-status" role="status">{status}</span></div><div className="conversation-view-actions">{(fullscreen || expanded) && live && <Button variant="outline" onClick={stop}><Square size={16}/>Stop captions</Button>}<Button ref={fullscreenButton} id="conversation-fullscreen" variant="outline" onClick={toggleFullscreen} aria-pressed={fullscreen || expanded} aria-label={fullscreen || expanded ? 'Exit fullscreen conversation' : 'Fullscreen conversation'}>{fullscreen || expanded ? <Minimize size={18} aria-hidden="true"/> : <Maximize size={18} aria-hidden="true"/>}{fullscreen || expanded ? 'Exit fullscreen' : 'Fullscreen'}</Button></div></div>{(fullscreen || expanded) && error && <div className="notice-panel notice-error" role="alert">{error}</div>}
         {(fullscreen || expanded) && lag > 2 && live && <div className="notice-panel" role="status">Captions are {lag.toFixed(1)} seconds behind.</div>}
@@ -256,21 +265,24 @@ export default function BrowserApp() {
           {holding && <Button variant="outline" onClick={() => setHolding(false)}><Play size={16}/>Resume text</Button>}
           <Button variant="outline" size="icon" aria-label="Exit fullscreen conversation" onClick={toggleFullscreen}><Minimize size={18}/></Button>
         </div>}
-        <TableMode session={session} live={live} holding={holding} held={held} size={size} announce={announce} onReturn={() => setHolding(false)} active={!setupVisible && viewMode === 'table'}/>
-        {viewMode === 'flow' && <Conversation session={session} live={live} holding={holding} heldSession={held} textSize={size} announce={announce} onReturn={() => setHolding(false)} onRename={(id, name) => {
+        <TableMode onRename={(id, name) => {
+          setSession(previous => renameSpeaker(previous, id, name));
+          setHeld(previous => previous ? renameSpeaker(previous, id, name) : previous);
+        }} session={session} live={live} holding={holding} held={held} size={size} announce={announce} onReturn={() => setHolding(false)} active={!setupVisible && viewMode === 'table'}/>
+        {viewMode === 'flow' && <Conversation showSpeakers={speakerDetection} session={session} live={live} holding={holding} heldSession={held} textSize={size} announce={announce} onReturn={() => setHolding(false)} onRename={(id, name) => {
           setSession(previous => renameSpeaker(previous, id, name));
           setHeld(previous => previous ? renameSpeaker(previous, id, name) : previous);
         }}/> }
-        <div className="caption-footer"><span>{viewMode === 'table' ? 'Edit table to change names or voice matches. ' : 'Tap a speaker label to name them. '}Speaker labels may change. Overlapping speech and word boundaries can be uncertain.</span></div>
+        <div className="caption-footer"><span>{!speakerDetection ? speechOnlyDescription : <>{viewMode === 'table' ? 'Edit table to change names or voice matches. ' : 'Tap a speaker label to name them. '}Speaker labels may change. Overlapping speech and word boundaries can be uncertain.</>}</span></div>
       </section></div>
       </div>
       <dialog ref={settingsDialog} className="caption-settings" aria-labelledby="settings-title" onClick={event => { if (event.target === settingsDialog.current) { const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) event.currentTarget.close(); } }}><div className="settings-heading"><h2 id="settings-title">Settings</h2><Button variant="ghost" size="icon" aria-label="Close settings" onClick={() => settingsDialog.current.close()}><X size={20}/></Button></div><aside className="conversation-tools" aria-label="Caption settings">
-        <section className="tool-section"><h2>Models on your device</h2><label htmlFor="speech-model">Speech model</label><select id="speech-model" data-slot="native-select" value={modelProfile} disabled={phase !== 'unloaded' || checking} onChange={event => { setModelFiles(null); setModelProfile(event.target.value); if (modelProfiles[event.target.value].cpuOnly) setDeviceMode('wasm'); }}>{Object.entries(modelProfiles).map(([id, profile]) => <option key={id} value={id}>{profile.label}</option>)}</select><p id="model-help" className="input-description">Download about {modelDownloadMB} MB from Hugging Face, or import your browser-models folder containing {`${modelProfiles[modelProfile].directory}/ and diar/`}. Both options verify the approved model files. Audio stays here.</p><Button id="download-models" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={download}>Download models</Button>{' '}<Button id="import-models" variant="outline" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={() => modelInput.current?.click()}>Import models</Button>{downloading && <Button variant="outline" onClick={() => downloadController.current?.abort()}>Cancel download</Button>}<p className="input-description">Downloads are saved in this browser when storage permits. After refreshing, completed downloads are restored and verified automatically. Partial downloads resume file by file with Download models. Imports are not saved. The model host receives download requests; no files or audio are uploaded.</p><Button variant="ghost" disabled={checking} onClick={clearModelCache}>Delete saved models</Button></section><section className="tool-section"><div className="tool-heading"><Mic size={18}/><h2>Your microphone</h2></div><label htmlFor="microphone">Audio input</label><select id="microphone" data-slot="native-select" value={device} disabled={['listening', 'starting', 'stopping'].includes(phase)} onChange={e => setDevice(e.target.value)}><option value="">System default</option>{devices.filter(d => d.deviceId).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}</select><p className="input-description">Choose the microphone closest to the conversation. Stop captions before switching.</p><Button variant="outline" disabled={live} onClick={selectMicrophones}>Show microphone names</Button><div className="signal-line"><span className={`signal-bars level-${level}`} aria-hidden="true">{[1,2,3,4,5].map(n => <i key={n}/>)}</span><span>{live ? level ? 'Audio detected' : 'No microphone signal' : 'Microphone off'}</span></div></section>
+        <section className="tool-section"><h2>Models on your device</h2><label><input type="checkbox" checked={speakerDetection} disabled={phase !== 'unloaded' || checking} onChange={event => changeSpeakerDetection(event.target.checked)}/> Identify speakers (diarization)</label>{!speakerDetection && <p className="input-description">{speechOnlyDescription}</p>}<label htmlFor="speaker-precision">Speaker model</label><select id="speaker-precision" data-slot="native-select" value={speakerDtype} disabled={!speakerDetection || phase !== 'unloaded' || checking} onChange={event => { setModelFiles(null); setSpeakerDtype(event.target.value); }}>{Object.entries(speakerModelProfiles).map(([id, profile]) => <option key={id} value={id}>{profile.label}</option>)}</select><p className="input-description">Q4 is the default for lower memory use. Q4 / FP16 has a smaller download but may use more runtime memory. Choose 8-bit for the original model.</p><label htmlFor="speech-model">Speech model</label><select id="speech-model" data-slot="native-select" value={modelProfile} disabled={phase !== 'unloaded' || checking} onChange={event => { setModelFiles(null); setModelProfile(event.target.value); if (modelProfiles[event.target.value].cpuOnly) setDeviceMode('wasm'); }}>{Object.entries(modelProfiles).map(([id, profile]) => <option key={id} value={id}>{profile.label}</option>)}</select><p id="model-help" className="input-description">Download about {modelDownloadMB} MB from Hugging Face, or import your browser-models folder containing {`${modelProfiles[modelProfile].directory}/${speakerDetection ? ' and diar/' : ''}`}. Both options verify the approved model files. Audio stays here.</p><Button id="download-models" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={download}>Download models</Button>{' '}<Button id="import-models" variant="outline" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={() => modelInput.current?.click()}>Import models</Button>{downloading && <Button variant="outline" onClick={() => downloadController.current?.abort()}>Cancel download</Button>}<p className="input-description">Downloads are saved in this browser when storage permits. After refreshing, completed downloads are restored and verified automatically. Partial downloads resume file by file with Download models. Imports are not saved. The model host receives download requests; no files or audio are uploaded.</p><Button variant="ghost" disabled={checking} onClick={clearModelCache}>Delete saved models</Button></section><section className="tool-section"><div className="tool-heading"><Mic size={18}/><h2>Your microphone</h2></div><label htmlFor="microphone">Audio input</label><select id="microphone" data-slot="native-select" value={device} disabled={['listening', 'starting', 'stopping'].includes(phase)} onChange={e => setDevice(e.target.value)}><option value="">System default</option>{devices.filter(d => d.deviceId).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}</select><p className="input-description">Choose the microphone closest to the conversation. Stop captions before switching.</p><Button variant="outline" disabled={live} onClick={selectMicrophones}>Show microphone names</Button><div className="signal-line"><span className={`signal-bars level-${level}`} aria-hidden="true">{[1,2,3,4,5].map(n => <i key={n}/>)}</span><span>{live ? level ? 'Audio detected' : 'No microphone signal' : 'Microphone off'}</span></div></section>
         <section className="tool-section"><h2 className="tool-heading">Reading comfort</h2><Button variant="outline" disabled={!session.segments.length} onClick={exportText}>Export text</Button><Button variant="outline" aria-pressed={contrast} onClick={() => setContrast(!contrast)}>High contrast</Button><p><label><input type="checkbox" checked={announce} onChange={e => setAnnounce(e.target.checked)}/> Announce captions to screen readers</label></p><Button variant="ghost" disabled={phase !== 'ready' && phase !== 'unloaded'} onClick={() => { setSession({ id: crypto.randomUUID(), segments: [] }); setHeld(null); setHolding(false); }}>Clear conversation</Button></section>
         <section className="privacy-card"><ShieldCheck size={20} aria-hidden="true"/><div><h2>Audio stays in this browser</h2><p>No inference server, recording, or audio uploads. Refresh clears the conversation. Models are imported or downloaded on request; app code loads from this website. Only model files may be saved, never conversations.</p></div></section>
-        <section className="tool-section"><label htmlFor="execution-device">Processing</label><select id="execution-device" data-slot="native-select" value={deviceMode} disabled={phase !== 'unloaded' || modelProfiles[modelProfile].cpuOnly} onChange={event => setDeviceMode(event.target.value)}><option value="webgpu">WebGPU speech + speakers</option><option value="wasm">CPU only</option></select><p className="input-description">{deviceMode === 'webgpu' ? 'Speech and speaker detection use the GPU; token decoding uses the CPU.' : 'Speech and speaker detection use the CPU. Phone speed and memory use are not yet validated.'} CPU uses one thread without cross-origin isolation.</p><label htmlFor="cpu-mode">Worker scheduling</label><select id="cpu-mode" data-slot="native-select" value={deviceMode === 'webgpu' ? 'parallel' : cpuMode} disabled={phase !== 'unloaded' || deviceMode === 'webgpu'} onChange={event => setCpuMode(event.target.value)}><option value="sequential">Shared worker</option><option value="parallel">Separate workers (experimental)</option></select><p className="input-description">WebGPU always runs speech and speaker detection in separate workers, so speech does not wait for speaker labels. Both models share GPU capacity. CPU-only scheduling can be chosen before loading models.</p></section>
-        <Diagnostics snapshot={diagnostics} modelProfile={modelProfile} device={deviceMode} threadBudget={threadBudget} onThreadBudget={setThreadBudget} unloaded={phase === 'unloaded'}/>
-        <p className="small-note">Experimental · English captions · {modelProfiles[modelProfile].label} + diarization q8. Processing speed depends on the device. {speed !== null && <span id="cpu-speed">Processing: {speed.toFixed(2)}× real time (1× keeps pace).</span>}</p>
+        <section className="tool-section"><label htmlFor="execution-device">Processing</label><select id="execution-device" data-slot="native-select" value={deviceMode} disabled={phase !== 'unloaded' || modelProfiles[modelProfile].cpuOnly} onChange={event => setDeviceMode(event.target.value)}><option value="webgpu">WebGPU speech + speakers</option><option value="wasm">CPU only</option></select><p className="input-description">{!speakerDetection ? 'Only speech recognition is loaded. Speaker detection is off.' : deviceMode === 'webgpu' ? 'Speech and speaker detection use the GPU; token decoding uses the CPU.' : 'Speech and speaker detection use the CPU. Phone speed and memory use are not yet validated.'} CPU uses one thread without cross-origin isolation.</p><label htmlFor="cpu-mode">Worker scheduling</label><select id="cpu-mode" data-slot="native-select" value={deviceMode === 'webgpu' ? 'parallel' : cpuMode} disabled={!speakerDetection || phase !== 'unloaded' || deviceMode === 'webgpu'} onChange={event => setCpuMode(event.target.value)}><option value="sequential">Shared worker</option><option value="parallel">Separate workers (experimental)</option></select><p className="input-description">{speakerDetection ? 'WebGPU runs speech and speaker detection in separate workers. CPU scheduling can be chosen before loading models.' : 'Speech-only captions use one speech worker. Refresh to change speaker detection after loading.'}</p></section>
+        <Diagnostics speakerDetection={speakerDetection} snapshot={diagnostics} modelProfile={modelProfile} device={deviceMode} threadBudget={threadBudget} onThreadBudget={setThreadBudget} unloaded={phase === 'unloaded'}/>
+        <p className="small-note">Experimental · English captions · {modelProfiles[modelProfile].label}{speakerDetection ? ` + diarization ${speakerDtype}.` : ' · speech only.'} Processing speed depends on the device. {speed !== null && <span id="cpu-speed">Processing: {speed.toFixed(2)}× real time (1× keeps pace).</span>}</p>
       </aside></dialog>
     </main>
   </div>;

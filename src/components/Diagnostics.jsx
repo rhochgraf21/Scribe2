@@ -2,7 +2,7 @@ import { isolationStatus } from '../browser/isolation';
 import { Button } from './ui/button';
 const stages = [['featuresMs','Speech preparation'],['encoderMs','Speech encoder'],['decoderMs','Speech decoder'],['jointMs','Token scoring'],['selectMs','Token selection'],['speakerFeaturesMs','Speaker preparation'],['speakerMs','Speaker detection (total)'],['speakerInferenceMs','Model computation'],['speakerCacheMs','Speaker cache updates'],['speakerTensorMs','Tensor preparation / output']];
 const number = value => Number.isFinite(value) ? value.toFixed(1) : '—';
-export function Diagnostics({ snapshot, modelProfile, device, threadBudget, onThreadBudget, unloaded }) {
+export function Diagnostics({ snapshot, modelProfile, device, threadBudget, onThreadBudget, unloaded, speakerDetection = true }) {
   const workers = snapshot?.workers || [];
   const isolated = Boolean(globalThis.crossOriginIsolated);
   const cores = Math.max(1, navigator.hardwareConcurrency || 1);
@@ -20,12 +20,12 @@ export function Diagnostics({ snapshot, modelProfile, device, threadBudget, onTh
     <select id="thread-budget" data-slot="native-select" value={isolated ? threadBudget : 1} disabled={!unloaded || device !== 'wasm' || !isolated} onChange={e=>onThreadBudget(Number(e.target.value))}>
       {[1,2,4,6,8].map(n=><option key={n} value={n} disabled={n > cores || (!isolated && n > 1)}>{n} thread{n===1?'':'s'}</option>)}
     </select>
-    <p className="input-description">{isolated ? `Multithreading available. Effective CPU budget: ${effectiveBudget} thread(s), bounded by your browser’s reported cores. With separate workers, a six-thread budget gives speech two threads and speakers four. More threads may be slower.` : 'One CPU thread is available on this page because cross-origin isolation is disabled. A higher thread selection cannot take effect. CPU speech and speaker detection use one shared worker.'} Browser reports {cores} logical cores.</p>
+    <p className="input-description">{!speakerDetection ? `Speech only: one worker, up to ${device === 'wasm' ? effectiveBudget : 1} CPU thread(s). No speaker model is loaded.` : isolated ? `Multithreading available. Effective CPU budget: ${effectiveBudget} thread(s), bounded by your browser’s reported cores. With separate workers, a six-thread budget gives speech two threads and speakers four. More threads may be slower.` : 'One CPU thread is available on this page because cross-origin isolation is disabled. A higher thread selection cannot take effect. CPU speech and speaker detection use one shared worker.'} Browser reports {cores} logical cores.</p>
     {!isolated && <p className="input-description">{isolationStatus} GitHub Pages uses a service worker to enable multithreading before models load. If setup is blocked, allow service workers and site storage, then reopen the page in a supported browser. The local browser server also supports multithreading.</p>}
     {!workers.length ? <p>Load models and start captions to collect timings.</p> : <>
-      <p>Audio received: {number(snapshot.capturedSeconds)} s · {snapshot.plan.mode === 'parallel' ? 'Separate workers' : 'Shared worker'}</p>
+      <p>Audio received: {number(snapshot.capturedSeconds)} s · {snapshot.plan.mode === 'speech-only' ? 'Speech only' : snapshot.plan.mode === 'parallel' ? 'Separate workers' : 'Shared worker'}</p>
       {workers.map(worker=><div key={worker.role} className="diagnostic-worker">
-        <strong>{worker.role === 'both' ? 'Speech + speakers' : worker.role === 'asr' ? 'Speech' : 'Speakers'}{worker.disabled ? ' (stopped)' : ''}</strong>
+        <strong>{worker.role === 'both' ? 'Speech + speakers' : worker.role === 'asr' ? 'Speech' : 'Speakers'}{worker.role !== 'asr' && snapshot.speakerDtype ? ` · ${snapshot.speakerDtype}` : ''}{worker.disabled ? ' (stopped)' : ''}</strong>
         <p>{worker.threads ?? '—'} configured thread(s) · Load: {number(worker.loadMs/1000)} s<br/>
         Pending audio: {number(worker.queuedSeconds)} s · Compute capacity: {number(worker.computeMs ? worker.audioSeconds*1000/worker.computeMs : NaN)}×</p>
         {!!worker.speakerChunkFrames && <p className="input-description">Speaker chunk: {worker.speakerChunkFrames * 80} ms · Lookahead: {worker.speakerLookaheadFrames * 80} ms · Recent history: {number(worker.speakerHistoryFrames * .08)} s · Calls: {worker.metrics.speakerCalls || 0}</p>}

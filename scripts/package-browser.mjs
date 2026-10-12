@@ -21,3 +21,6 @@ console.log('Browser-only site built. No models, audio, or backend included.');
 
 await cp('config/moonshine-models.json', `${root}/licenses/moonshine-model-manifest.json`);
 await cp('src/browser/MOONSHINE-LICENSE', `${root}/licenses/moonshine.txt`);
+
+await cp('config/diar-q4f16.json', `${root}/licenses/diar-q4f16-manifest.json`);
+await cp('config/diar-q4.json', `${root}/licenses/diar-q4-manifest.json`);

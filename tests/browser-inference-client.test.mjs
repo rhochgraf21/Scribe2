@@ -157,3 +157,53 @@ test('Moonshine model files are routed to speech only for both sizes',()=>{
     assert.deepEqual(Object.keys(diar.sent[0].data.modelFiles),['diar/config.json']);
   }
 });
+
+test('speech-only runs one speech worker with no speaker files, supports captions, ack, stop and restart', () => {
+ for (const device of ['wasm', 'webgpu']) {
+  const workers = [], messages = [];
+  const client = new InferenceClient({ speakerDetection:false, device, mode:'parallel', hardware:8, isolated:true, threadBudget:6, workerFactory:() => {
+   const worker = { sent:[], postMessage(data) { this.sent.push(data); }, terminate() {}, emit(data) { this.onmessage({data}); } };
+   workers.push(worker); return worker;
+  }});
+  client.onmessage = ({data}) => messages.push(data);
+  assert.equal(workers.length, 1);
+  const asr = workers[0];
+  client.postMessage({ type:'load', modelProfile:'moonshine-tiny', modelFiles:{ 'moonshine-tiny/encoder.onnx':{}, 'diar/model.onnx':{} } });
+  assert.equal(asr.sent[0].role, 'asr');
+  assert.deepEqual(Object.keys(asr.sent[0].modelFiles), ['moonshine-tiny/encoder.onnx']);
+  assert.equal(asr.sent[0].threads, device === 'wasm' ? 6 : 1);
+  asr.emit({type:'ready'}); assert.equal(messages.at(-1).type, 'ready');
+  for (let run = 0; run < 2; run++) {
+   client.postMessage({type:'start'});
+   assert.equal(client.updates.speakerDetectionEnded, true);
+   client.postMessage({type:'audio',samples:new Float32Array(16000 * 16).buffer});
+   asr.emit({type:'words',from:0,words:[{text:'Hello',time:0,stable:true}]});
+   assert.equal(messages.at(-1).segments[0].speaker, null);
+   assert.equal(client.updates.finalized, 1);
+   asr.emit({type:'ack',samples:16000 * 16,elapsedMs:100});
+   assert.equal(messages.at(-1).samples, 16000 * 16);
+   client.postMessage({type:'stop'}); asr.emit({type:'stopped',elapsedMs:100});
+   assert.equal(messages.at(-1).type, 'stopped');
+  }
+  assert.ok(!messages.some(message => message.type === 'warning' || message.type === 'diar-progress'));
+  client.terminate();
+ }
+});
+
+test('Q4/FP16 selection and model files reach the speaker worker and diagnostics', () => {
+ const {client,workers:[asr,diar]}=harness();
+ client.postMessage({type:'load',speakerDtype:'q4f16',modelFiles:{'asr/encoder.onnx':{},'diar/onnx/model_q4f16.onnx':{},'diar/onnx/model_q4f16.onnx_data':{}}});
+ asr.emit({type:'ready'});
+ assert.equal(diar.sent[0].data.speakerDtype,'q4f16');
+ assert.deepEqual(Object.keys(diar.sent[0].data.modelFiles),['diar/onnx/model_q4f16.onnx','diar/onnx/model_q4f16.onnx_data']);
+ assert.equal(client.diagnostics().speakerDtype,'q4f16');
+});
+
+test('normal Q4 selection reaches the speaker worker', () => {
+ const {client,workers:[asr,diar]}=harness();
+ client.postMessage({type:'load',speakerDtype:'q4',modelFiles:{'diar/onnx/model_q4.onnx':{},'diar/onnx/model_q4.onnx_data':{}}});
+ asr.emit({type:'ready'});
+ assert.equal(diar.sent[0].data.speakerDtype,'q4');
+ assert.deepEqual(Object.keys(diar.sent[0].data.modelFiles),['diar/onnx/model_q4.onnx','diar/onnx/model_q4.onnx_data']);
+ assert.equal(client.diagnostics().speakerDtype,'q4');
+});

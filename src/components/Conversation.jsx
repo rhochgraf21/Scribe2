@@ -3,7 +3,7 @@ import { ArrowDown, Captions, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { conversationTurns } from '@/lib/caption-flow';
 
-export function Conversation({ session, live, holding, heldSession, textSize, announce, onReturn, onEdit, onRename, speakerStyles }) {
+export function Conversation({ session, live, holding, heldSession, textSize, announce, onReturn, onEdit, onRename, speakerStyles, showSpeakers = true }) {
   const view = holding ? heldSession : session;
   const prior = useRef([]);
   const turns = useMemo(() => { prior.current = conversationTurns(view, prior.current); return prior.current; }, [view]);
@@ -32,7 +32,7 @@ export function Conversation({ session, live, holding, heldSession, textSize, an
     const frame = requestAnimationFrame(() => { programmatic.current = false; });
     return () => cancelAnimationFrame(frame);
   }, [turns, following, holding, textSize]);
-  const announcementText = (view?.segments || []).map(s => `${view.speakers?.[s.speaker] || (s.speaker ? `Speaker ${s.speaker}` : 'Speaker not identified')}: ${s.text}`).join(' ');
+  const announcementText = (view?.segments || []).map(s => showSpeakers ? `${view.speakers?.[s.speaker] || (s.speaker ? `Speaker ${s.speaker}` : 'Speaker not identified')}: ${s.text}` : s.text).join(' ');
   useEffect(() => {
     if (!announce || holding) return;
     const text = announcementText;
@@ -53,11 +53,11 @@ export function Conversation({ session, live, holding, heldSession, textSize, an
   return <div className="conversation-surface" onFocusCapture={event => { if (event.target.closest('.speaker-editor')) setFollowing(false); }}>
     <div id="transcript" className={`caption-scroll caption-size-${textSize}`} ref={scroller} tabIndex={0} role="region" aria-label="Conversation transcript" aria-describedby="reading-help" aria-live="off" onScroll={scroll} onWheel={event => { if (event.deltaY < 0) setFollowing(false); }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) setFollowing(false); }}>
       <p id="reading-help" className="sr-only">Captions appear in conversation order and are corrected in place. Scroll to review. Hold text pauses visual updates without stopping the microphone.</p>
-      {!turns.length ? <div className="caption-empty"><span className="empty-caption-icon" aria-hidden="true"><Captions size={36}/></span><h2>{live ? 'Listening. Your words will appear here.' : 'A clear place for the conversation.'}</h2><p>{live ? 'Speak naturally. Speaker labels will appear as voices are recognised.' : 'Choose your microphone, then start captions. Words appear here and improve in place.'}</p><div className="reading-example" aria-hidden="true"><span className="example-line"/><span className="example-line short"/></div></div> : <p className="caption-flow segment-text">
+      {!turns.length ? <div className="caption-empty"><span className="empty-caption-icon" aria-hidden="true"><Captions size={36}/></span><h2>{live ? 'Listening. Your words will appear here.' : 'A clear place for the conversation.'}</h2><p>{live ? showSpeakers ? 'Speak naturally. Speaker labels will appear as voices are recognised.' : 'Speak naturally. Your words will appear here.' : 'Choose your microphone, then start captions. Words appear here and improve in place.'}</p><div className="reading-example" aria-hidden="true"><span className="example-line"/><span className="example-line short"/></div></div> : <p className="caption-flow segment-text">
         {turns.map((turn, index) => {
           const name = view.speakers?.[turn.speaker] || (turn.speaker ? `Speaker ${turn.speaker}` : 'Speaker ?');
           return <span key={turn.id} data-turn={turn.id} style={speakerStyles?.[turn.speaker]} className={`inline-turn voice-${Number(turn.speaker || 0) % 5}`}>
-            {index > 0 && ' '}<SpeakerLabel id={turn.speaker} name={name} onRename={onRename}/>{' '}
+            {index > 0 && ' '}{showSpeakers && <SpeakerLabel id={turn.speaker} name={name} onRename={onRename}/>}{' '}
             {turn.pieces.map((piece, pieceIndex) => <span key={pieceIndex} className={piece.draft ? 'caption-draft' : undefined}>{pieceIndex > 0 && !/^[,.;:!?]/.test(piece.text) ? ' ' : ''}{piece.text.replace(/\s+/gu, ' ')}</span>)}
           </span>;
         })}
@@ -69,7 +69,7 @@ export function Conversation({ session, live, holding, heldSession, textSize, an
   </div>;
 }
 
-function SpeakerLabel({ id, name, onRename }) {
+export function SpeakerLabel({ id, name, onRename }) {
   const [editing, setEditing] = useState(null), [draft, setDraft] = useState('');
   const trigger = useRef(null);
   const close = () => { setEditing(null); requestAnimationFrame(() => trigger.current?.focus()); };

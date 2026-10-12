@@ -69,3 +69,17 @@ export function freshVoiceCandidate(segments, baselineIds) {
   const ids = new Set(fresh.map(segment => String(segment.speaker)));
   return ids.size === 1 ? String(fresh.at(-1).speaker) : '';
 }
+
+// Caption-label naming confirms this specific voice, without moving other matches.
+export function nameTableSpeaker(seats, speaker, value, ownVoiceHistory = []) {
+  const id = String(speaker), name = value.trim();
+  if (!/^[1-9]\d*$/.test(id) || !name || name.length > 80) return seats;
+  const bound = seats.find(seat => String(seat.speaker) === id);
+  if (bound) return seats.map(seat => seat.id === bound.id ? { ...seat, name } : seat);
+  const matches = seats.filter(seat => seat.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase());
+  // Duplicate names or an already-matched namesake need an explicit seat choice.
+  if (matches.length > 1 || matches[0]?.speaker) return seats;
+  const target = matches[0] || seats.find(seat => !seat.self && !seat.name && !seat.speaker);
+  if (!target || (!target.self && ownVoiceHistory.map(String).includes(id))) return seats;
+  return bindSeat(seats, target.id, id, name);
+}

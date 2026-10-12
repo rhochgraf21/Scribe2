@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bindSeat, filterSession, makeSeats, mentionAlerts, namedSession } from '../src/browser/table-mode.js';
+import { bindSeat, filterSession, makeSeats, mentionAlerts, namedSession, nameTableSpeaker } from '../src/browser/table-mode.js';
 test('voice matches cannot move to another seat implicitly', () => {
  const seats = bindSeat(bindSeat(makeSeats(), 2, 1, 'Alice'), 3, 1, 'Bob');
  assert.equal(seats[1].speaker, '1'); assert.equal(seats[2].speaker, null);
@@ -70,4 +70,25 @@ test('matching ignores delayed old attribution and waits for unambiguous fresh s
  assert.equal(freshVoiceCandidate(words,baseline),'3');
  assert.equal(freshVoiceCandidate(words.slice(0,1),baseline),'');
  assert.equal(freshVoiceCandidate([...words,{id:'d',speaker:2,text:'Interrupted'}],baseline),'');
+});
+
+test('caption naming links a named seat or empty seat and preserves existing matches', () => {
+ let seats = makeSeats(3).map((s, i) => ({ ...s, name: ['Colin', 'Kevin', ''][i] }));
+ seats = nameTableSpeaker(seats, 3, 'Kevin');
+ assert.equal(seats[1].speaker, '3');
+ seats = nameTableSpeaker(seats, 3, 'Kev');
+ assert.equal(seats[1].name, 'Kev');
+ seats = nameTableSpeaker(seats, 2, 'Rob');
+ assert.equal(seats[2].name, 'Rob'); assert.equal(seats[2].speaker, '2');
+ seats = nameTableSpeaker(seats, 1, 'Colin');
+ assert.equal(seats[0].speaker, '1');
+ assert.equal(nameTableSpeaker(seats, 4, 'Rob'), seats);
+ assert.equal(nameTableSpeaker(seats, 4, 'New person'), seats);
+});
+test('caption naming does not guess duplicate names or assign a previous own voice to others', () => {
+ const seats = makeSeats(3).map((s, i) => ({ ...s, name: i ? 'Alex' : 'Me' }));
+ assert.equal(nameTableSpeaker(seats, 2, 'Alex'), seats);
+ const empty = makeSeats();
+ assert.equal(nameTableSpeaker(empty, 1, 'Someone', ['1']), empty);
+ assert.equal(nameTableSpeaker(empty, null, 'Unknown'), empty);
 });

@@ -1,0 +1,47 @@
+{
+  "id": "onnx-community/Nemotron-3-Diarization-ONNX",
+  "sha": "353b6f8ad2cac3580e982d7fbdf0a010786b0406",
+  "directory": "diar",
+  "files": [
+    {
+      "rfilename": "README.md",
+      "blobId": "be67f9ece6ca2644795de3742cb760cd2f9cae5f",
+      "size": 31309
+    },
+    {
+      "rfilename": "config.json",
+      "blobId": "b9ea82484c7038e56106fd6f296694ee12a98107",
+      "size": 1623
+    },
+    {
+      "rfilename": "preprocessor_config.json",
+      "blobId": "9b177e08a7509a1a4cde340f7ef7a509f326497c",
+      "size": 339
+    },
+    {
+      "rfilename": "processor_config.json",
+      "blobId": "5779fbbbb8401983be84e0b4f09a236ad8227dfe",
+      "size": 623
+    },
+    {
+      "rfilename": "onnx/model_q4f16.onnx",
+      "blobId": "e98f2a7dfc742c2369cc22b89aefaf492ec6d716",
+      "size": 408120,
+      "lfs": {
+        "sha256": "e80ee1f1920f44c37d03bc65b1f1fd4f7450f5e1adbb0eaaccd3ab9442a543f7",
+        "size": 408120,
+        "pointerSize": 131
+      }
+    },
+    {
+      "rfilename": "onnx/model_q4f16.onnx_data",
+      "blobId": "7a23c2197120b2be276b026b593666fc489a8b58",
+      "size": 73076608,
+      "lfs": {
+        "sha256": "3a9ba1de48ead635c04a117bae263f97fbd354358bca4197fb7184df7a5edf06",
+        "size": 73076608,
+        "pointerSize": 133
+      }
+    }
+  ]
+}

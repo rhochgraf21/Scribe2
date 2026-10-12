@@ -6,7 +6,8 @@ export function renameSpeaker(session, id, value) {
   return { ...session, speakers: { ...session.speakers, [id]: name } };
 }
 
-export function transcriptText(session) {
+export function transcriptText(session, showSpeakers = true) {
+  if (!showSpeakers) return session.segments.map(segment => segment.text).join(' ');
   const lines = [];
   let previous;
   for (const segment of session.segments) {

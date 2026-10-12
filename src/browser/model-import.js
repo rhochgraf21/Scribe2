@@ -3,6 +3,10 @@ import chunks from '../../config/browser-model-chunks.json' with { type: 'json' 
 import cpuModel from '../../config/cpu-model.json' with { type: 'json' };
 import cpuChunks from '../../config/cpu-model-chunks.json' with { type: 'json' };
 import manifest from '../../config/browser-models.json' with { type: 'json' };
+import diarQ4Standard from '../../config/diar-q4.json' with { type: 'json' };
+import diarQ4StandardChunks from '../../config/diar-q4-chunks.json' with { type: 'json' };
+import diarQ4 from '../../config/diar-q4f16.json' with { type: 'json' };
+import diarQ4Chunks from '../../config/diar-q4f16-chunks.json' with { type: 'json' };
 import moonshineModels from '../../config/moonshine-models.json' with { type: 'json' };
 import moonshineChunks from '../../config/moonshine-model-chunks.json' with { type: 'json' };
 
@@ -10,6 +14,11 @@ const entriesFor = models => models.flatMap(model => model.files.filter(file => 
   ...file, path: `${model.directory}/${file.rfilename}`,
   url: `https://huggingface.co/${model.id}/resolve/${model.sha}/${file.rfilename}`,
 })));
+export const speakerModelProfiles = {
+  q4: { label: 'Q4 · recommended (84 MB)', entries: entriesFor([diarQ4Standard]) },
+  q4f16: { label: 'Q4 / FP16 · smaller (74 MB)', entries: entriesFor([diarQ4]) },
+  q8: { label: '8-bit · original (121 MB)', entries: entriesFor(manifest.filter(model => model.directory === 'diar')) },
+};
 export const modelEntries = entriesFor(manifest);
 export const modelProfiles = {
   standard: { label: 'Nemotron 3.5 · original', directory: 'asr', entries: modelEntries },
@@ -28,7 +37,7 @@ async function digest(bytes, algorithm = 'SHA-256') {
   return Array.from(new Uint8Array(hash), n => n.toString(16).padStart(2, '0')).join('');
 }
 function chunkPlan(entry) {
-  const plan = (moonshineChunks.files[entry.path] || cpuChunks.files[entry.path] || chunks.files[entry.path]);
+  const plan = (diarQ4StandardChunks.files[entry.path] || diarQ4Chunks.files[entry.path] || moonshineChunks.files[entry.path] || cpuChunks.files[entry.path] || chunks.files[entry.path]);
   return plan?.sha256 === entry.lfs?.sha256 ? plan : null;
 }
 async function verifyBlock(bytes, entry, index) {

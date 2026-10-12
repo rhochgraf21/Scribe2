@@ -81,3 +81,15 @@ Validation: `npm test` covers filtering and mentions. From the parent workspace,
 Table fullscreen hides the conversation header and reading toolbar, with small exit/stop controls remaining accessible. Mention cards and speaker badges appear with the seating diagram. Your name is shared between your own seat and mention settings; enter it once in either place.
 
 Seat-count changes retain remaining names, voice matches, selections, and positions. A newly added seat starts unmatched; naming alone does not identify a voice. Use **Match a detected voice** to link an already-heard speaker to the correct named seat. New live matching ignores corrections to older words and requires several words with a consistent speaker ID. Own-voice and unidentified-speaker mention alerts are suppressed; match your own voice before alerts become active. The underlying diarization model can still misattribute speech.
+
+## Phone setup and speech-only captions
+
+Phones start with **Moonshine Streaming Tiny INT8 · CPU** and **Identify speakers (diarization)** unchecked. The speech-only download is about 79 MB; speaker files are excluded from downloads, saved-file checks, imports, and inference. Captions open directly in Reading mode in a full-window view. Speaker labels, Table mode, individual filtering, and name alerts require speaker detection; setup explains this before downloading. Enable it before loading to use those features, or refresh to change after loading. A smaller model reduces memory needs but does not guarantee realtime speed on every phone.
+
+Table setup starts with your name, then offers two choices. **Name people in the transcript** requires clicking each speaker label, typing the person's name, and saving; the instruction remains visible while voices are unnamed. **Use voice identification** guides you through each person speaking and confirming their name.
+
+## Speaker-model precision
+
+Speaker detection defaults to the upstream **Q4** export (about 83.1 MB), pinned to the same diarization revision as the original Q8 model. Settings offers Q4, Q4/FP16 (73.5 MB), and original Q8 (120.8 MB) before loading. All variants use verified, bounded downloads; no weights are bundled with the site. Phones still default to speech only. Changing precision after loading requires a refresh.
+
+A 20-second desktop Chrome CPU/WASM fixture ran all three exports successfully. Instrumented WASM linear-memory allocation peaked at 125.4 MB for Q4, 150.5 MB for Q4/FP16, and 180.7 MB for Q8. These are one-fixture allocations, not full browser RAM, phone measurements, or guaranteed speed/accuracy. Q4 and Q4/FP16 are mixed precision: 93 MatMulNBits operators use 4-bit weights and 34 retain 8-bit weights. Reproduce file verification with `node scripts/verify-diar-q4f16.cjs /path/to/browser-models/diar q4`.

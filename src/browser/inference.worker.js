@@ -122,6 +122,8 @@ self.onmessage = ({ data }) => {
         const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
         if (!adapter || adapter.info?.isFallbackAdapter) throw Error('Hardware WebGPU is unavailable. Choose CPU explicitly to continue.');
       }
+      const speakerDtype = data.speakerDtype || 'q8';
+      if (!['q8', 'q4', 'q4f16'].includes(speakerDtype)) throw Error('Invalid speaker precision');
       role = data.role || 'both';
       if (!['both','asr','diar'].includes(role)) throw Error('Invalid inference role');
       threads = self.crossOriginIsolated ? Math.max(1, Math.min(data.threads || 1, navigator.hardwareConcurrency || 1)) : 1;
@@ -156,7 +158,7 @@ self.onmessage = ({ data }) => {
         // Custom chunk size; retain the recommended four-frame right context.
         processor.streaming_modes = { ...processor.streaming_modes, buffered: [chunkFrames, 4] };
         processor.set_streaming_mode('buffered');
-        model = await Nemotron3DiarizationForAudioFrameClassification.from_pretrained('diar', { device, dtype: 'q8', local_files_only: true,
+        model = await Nemotron3DiarizationForAudioFrameClassification.from_pretrained('diar', { device, dtype: speakerDtype, local_files_only: true,
           session_options: { ...speakerRuntimeOptions, ...(data.speakerFixedBatch ? { freeDimensionOverrides: { batch_size: 1 } } : {}) } });
         const historyFrames = data.speakerHistoryFrames ?? 200;
         if (![150, 200, 264].includes(historyFrames)) throw Error('Invalid speaker history size');
