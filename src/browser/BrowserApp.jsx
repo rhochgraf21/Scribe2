@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { Captions, Mic, Square, Pause, Play, Plus, Minus, ShieldCheck, Maximize, Minimize } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Diagnostics } from '@/components/Diagnostics';
 import { Conversation } from '@/components/Conversation';
 import { applyCaptionPatch } from './caption-updates';
-import { validateModelFiles, downloadModels, modelDownloadMB, MODEL_CACHE, modelEntries } from './model-import';
+import { validateModelFiles, downloadModels, MODEL_CACHE, modelProfiles } from './model-import';
 import { openModelStore, deleteModelStore } from './model-storage';
+import { renameSpeaker, transcriptText } from './speaker-names';
 import { InferenceClient } from './inference-client';
 
 export default function BrowserApp() {
+  const [modelProfile, setModelProfile] = useState('standard');
+  const modelEntries = modelProfiles[modelProfile].entries;
+  const modelDownloadMB = Math.ceil(modelEntries.reduce((sum, file) => sum + file.size, 0) / 1e6);
   const panel = useRef(), fullscreenButton = useRef();
   const [fullscreen, setFullscreen] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -39,7 +44,7 @@ export default function BrowserApp() {
     const keys = event => {
       if (event.key === 'Escape') { event.preventDefault(); setExpanded(false); }
       if (event.key === 'Tab') {
-        const controls = [...panel.current.querySelectorAll('button:not(:disabled), [tabindex="0"]')];
+        const controls = [...panel.current.querySelectorAll('button:not(:disabled), input:not(:disabled), [tabindex="0"]')];
         const first = controls[0], last = controls.at(-1);
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -61,7 +66,7 @@ export default function BrowserApp() {
     const controller = new AbortController(); downloadController.current = controller;
     setChecking(true); setDownloading(true); setModelFiles(null); setError('');
     try {
-      const result = await downloadModels(setStatus, { signal: controller.signal });
+      const result = await downloadModels(setStatus, { signal: controller.signal, entries: modelEntries });
       setModelFiles(result.files);
       setStatus(result.saved ? 'Models verified and saved on this device. Ready to load.' : 'Models verified. Ready to load; browser storage was unavailable or full.');
     } catch (error) {
@@ -76,7 +81,8 @@ export default function BrowserApp() {
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
-    setChecking(true);
+    setChecking(true); setModelFiles(null); setError('');
+    setStatus('Download or import the selected models to begin.');
     (async () => {
       try {
         const store = await openModelStore();
@@ -88,7 +94,7 @@ export default function BrowserApp() {
           return;
         }
         const result = await downloadModels(message => { if (active) setStatus(message); }, {
-          signal: controller.signal, store,
+          signal: controller.signal, store, entries: modelEntries,
           fetcher: () => { throw Error('Saved models need repair. Choose Download models or Import models.'); },
         });
         if (active) { setModelFiles(result.files); setStatus('Saved models verified. Ready to load.'); }
@@ -96,10 +102,10 @@ export default function BrowserApp() {
       finally { if (active) setChecking(false); }
     })();
     return () => { active = false; controller.abort(); };
-  }, []);
+  }, [modelProfile]);
   async function importModels(event) {
     setChecking(true); setModelFiles(null); setError('');
-    try { setModelFiles(await validateModelFiles([...event.target.files], setStatus)); setStatus('Models verified. Ready to load.'); }
+    try { setModelFiles(await validateModelFiles([...event.target.files], setStatus, modelEntries)); setStatus('Models verified. Ready to load.'); }
     catch (error) { setError(error.message); setStatus('Import failed. Choose the approved model folder.'); }
     finally { setChecking(false); event.target.value = ''; }
   }
@@ -111,7 +117,9 @@ export default function BrowserApp() {
   const [level, setLevel] = useState(0), [lag, setLag] = useState(0), [speed, setSpeed] = useState(null);
   const [deviceMode, setDeviceMode] = useState('webgpu');
   const executionLabel = deviceMode === 'webgpu' ? 'WebGPU speech + speakers' : 'browser CPU';
-  const [cpuMode, setCpuMode] = useState('sequential');
+  const [diagnostics, setDiagnostics] = useState(null), [threadBudget, setThreadBudget] = useState(6);
+  const lastDiagnostic = useRef(0);
+  const [cpuMode, setCpuMode] = useState('parallel');
   const sizes = [20, 24, 28, 32, 40];
   const live = phase === 'listening';
   async function enumerate() {
@@ -137,11 +145,12 @@ export default function BrowserApp() {
     return () => { cleanup(); window.removeEventListener('pagehide', cleanup); navigator.mediaDevices?.removeEventListener('devicechange', enumerate); };
   }, []);
   function load() {
-    setError(''); setPhase('loading'); setStatus('Loading models into browser memory…');
+    setDiagnostics(null); setError(''); setPhase('loading'); setStatus('Loading models into browser memory…');
     worker.current?.terminate();
-    const next = new InferenceClient({ mode:cpuMode, device:deviceMode, jointMode:'logits' }); worker.current = next;
+    const next = new InferenceClient({ mode:cpuMode, device:deviceMode, threadBudget:deviceMode === 'wasm' ? threadBudget : 4, jointMode:'logits' }); worker.current = next;
     next.onerror = event => fail(event.message || 'Browser inference worker failed');
     next.onmessage = ({ data }) => {
+      if (data.diagnostics && (data.type !== 'ack' || performance.now() - lastDiagnostic.current > 1000)) { setDiagnostics(data.diagnostics); lastDiagnostic.current = performance.now(); }
       if (data.type === 'status') setStatus(data.message);
       if (data.type === 'ready') { setPhase('ready'); setCpuMode(data.plan.mode); setStatus(`Ready · ${executionLabel} · ${data.plan.mode === 'parallel' ? 'separate workers' : 'shared worker'}`); }
       if (data.type === 'error') fail(data.message);
@@ -152,7 +161,7 @@ export default function BrowserApp() {
       if (data.type === 'ack') { setSpeed(data.elapsedMs && data.audioSeconds ? data.audioSeconds / (data.elapsedMs / 1000) : null); pending.current = Math.max(0, pending.current - data.samples); setLag(pending.current / 16000); }
       if (data.type === 'stopped') { setPhase('ready'); setStatus(`Conversation ended · ${executionLabel}`); }
     };
-    next.postMessage({ type: 'load', modelFiles, assetBase: new URL('.', document.baseURI).href });
+    next.postMessage({ type: 'load', modelProfile, modelFiles, assetBase: new URL('.', document.baseURI).href });
   }
   async function selectMicrophones() {
     try {
@@ -173,7 +182,7 @@ export default function BrowserApp() {
       const mute = context.createGain(); mute.gain.value = 0;
       Object.assign(capture.current, { source, node });
       source.connect(filter).connect(node).connect(mute).connect(context.destination);
-      pending.current = 0; setLag(0); setSpeed(null); setSession({ id: 'browser', segments: [] }); setHolding(false); setHeld(null);
+      pending.current = 0; setLag(0); setSpeed(null); setDiagnostics(null); lastDiagnostic.current = 0; setSession({ id: 'browser', segments: [] }); setHolding(false); setHeld(null);
       worker.current.postMessage({ type: 'start' });
       liveRef.current = true;
       node.port.onmessage = ({ data }) => {
@@ -206,6 +215,11 @@ export default function BrowserApp() {
     }
     release(); worker.current?.postMessage({ type: 'stop' });
   }
+  function exportText() {
+    const url = URL.createObjectURL(new Blob([transcriptText(session)], { type: 'text/plain;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'scribe-transcript.txt'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   const toggleHold = () => { if (!holding) setHeld(structuredClone(session)); setHolding(!holding); };
   return <div className={`app-shell ${contrast ? 'high-contrast' : ''}`}>
     <a className="skip-link" href="#transcript">Skip to conversation captions</a>
@@ -220,14 +234,18 @@ export default function BrowserApp() {
         <div className="caption-panel-header"><div className="caption-heading"><h2 id="caption-title">Conversation</h2><span id="studio-status" className="listening-status" role="status">{status}</span></div><div className="conversation-view-actions">{(fullscreen || expanded) && live && <Button variant="outline" onClick={stop}><Square size={16}/>Stop captions</Button>}<Button ref={fullscreenButton} id="conversation-fullscreen" variant="outline" onClick={toggleFullscreen} aria-pressed={fullscreen || expanded} aria-label={fullscreen || expanded ? 'Exit fullscreen conversation' : 'Fullscreen conversation'}>{fullscreen || expanded ? <Minimize size={18} aria-hidden="true"/> : <Maximize size={18} aria-hidden="true"/>}{fullscreen || expanded ? 'Exit fullscreen' : 'Fullscreen'}</Button></div></div>{(fullscreen || expanded) && error && <div className="notice-panel notice-error" role="alert">{error}</div>}
         {(fullscreen || expanded) && lag > 2 && live && <div className="notice-panel" role="status">Captions are {lag.toFixed(1)} seconds behind.</div>}
         <div className="reading-toolbar"><div className="type-controls" role="group" aria-label="Caption text size"><Button variant="ghost" size="icon" aria-label="Decrease caption text size" disabled={size === 20} onClick={() => setSize(sizes[sizes.indexOf(size) - 1])}><Minus size={17}/></Button><span className="text-size-label">Aa {size}</span><Button variant="ghost" size="icon" aria-label="Increase caption text size" disabled={size === 40} onClick={() => setSize(sizes[sizes.indexOf(size) + 1])}><Plus size={17}/></Button></div><Button variant="outline" onClick={toggleHold} disabled={!session.segments.length} aria-pressed={holding}>{holding ? <Play size={16}/> : <Pause size={16}/>}{holding ? 'Resume text' : 'Hold text'}</Button></div>
-        <Conversation session={session} live={live} holding={holding} heldSession={held} textSize={size} announce={announce} onReturn={() => setHolding(false)}/>
-        <div className="caption-footer"><span>Speaker labels may change. Overlapping speech and word boundaries can be uncertain.</span></div>
+        <Conversation session={session} live={live} holding={holding} heldSession={held} textSize={size} announce={announce} onReturn={() => setHolding(false)} onRename={(id, name) => {
+          setSession(previous => renameSpeaker(previous, id, name));
+          setHeld(previous => previous ? renameSpeaker(previous, id, name) : previous);
+        }}/>
+        <div className="caption-footer"><span>Tap a speaker label to name them. Speaker labels may change. Overlapping speech and word boundaries can be uncertain.</span></div>
       </section><aside className="conversation-tools" aria-label="Caption settings">
-        <section className="tool-section"><h2>Models on your device</h2><p id="model-help" className="input-description">Download about {modelDownloadMB} MB from Hugging Face, or import your browser-models folder containing asr/ and diar/. Both options verify the approved model files. Audio stays here.</p><Button id="download-models" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={download}>Download models</Button>{' '}<Button id="import-models" variant="outline" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={() => modelInput.current?.click()}>Import models</Button><input ref={modelInput} id="model-folder" type="file" webkitdirectory="" multiple hidden disabled={phase !== 'unloaded' || checking} onChange={importModels}/>{downloading && <Button variant="outline" onClick={() => downloadController.current?.abort()}>Cancel download</Button>}<p className="input-description">Downloads are saved in this browser when storage permits. After refreshing, completed downloads are restored and verified automatically. Partial downloads resume file by file with Download models. Imports are not saved. The model host receives download requests; no files or audio are uploaded.</p><Button variant="ghost" disabled={checking} onClick={clearModelCache}>Delete saved models</Button></section><section className="tool-section"><div className="tool-heading"><Mic size={18}/><h2>Your microphone</h2></div><label htmlFor="microphone">Audio input</label><select id="microphone" data-slot="native-select" value={device} disabled={['listening', 'starting', 'stopping'].includes(phase)} onChange={e => setDevice(e.target.value)}><option value="">System default</option>{devices.filter(d => d.deviceId).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}</select><p className="input-description">Choose the microphone closest to the conversation. Stop captions before switching.</p><Button variant="outline" disabled={live} onClick={selectMicrophones}>Show microphone names</Button><div className="signal-line"><span className={`signal-bars level-${level}`} aria-hidden="true">{[1,2,3,4,5].map(n => <i key={n}/>)}</span><span>{live ? level ? 'Audio detected' : 'No microphone signal' : 'Microphone off'}</span></div></section>
-        <section className="tool-section"><h2 className="tool-heading">Reading comfort</h2><Button variant="outline" aria-pressed={contrast} onClick={() => setContrast(!contrast)}>High contrast</Button><p><label><input type="checkbox" checked={announce} onChange={e => setAnnounce(e.target.checked)}/> Announce captions to screen readers</label></p><Button variant="ghost" disabled={phase !== 'ready' && phase !== 'unloaded'} onClick={() => { setSession({ id: 'browser', segments: [] }); setHeld(null); setHolding(false); }}>Clear conversation</Button></section>
+        <section className="tool-section"><h2>Models on your device</h2><label htmlFor="speech-model">Speech model</label><select id="speech-model" data-slot="native-select" value={modelProfile} disabled={phase !== 'unloaded' || checking} onChange={event => { setModelFiles(null); setModelProfile(event.target.value); if (event.target.value === 'int8-dynamic') setDeviceMode('wasm'); }}>{Object.entries(modelProfiles).map(([id, profile]) => <option key={id} value={id}>{profile.label}</option>)}</select><p id="model-help" className="input-description">Download about {modelDownloadMB} MB from Hugging Face, or import your browser-models folder containing {modelProfile === 'int8-dynamic' ? 'asr-int8/ and diar/' : 'asr/ and diar/'}. Both options verify the approved model files. Audio stays here.</p><Button id="download-models" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={download}>Download models</Button>{' '}<Button id="import-models" variant="outline" disabled={phase !== 'unloaded' || checking} aria-describedby="model-help" onClick={() => modelInput.current?.click()}>Import models</Button><input ref={modelInput} id="model-folder" type="file" webkitdirectory="" multiple hidden disabled={phase !== 'unloaded' || checking} onChange={importModels}/>{downloading && <Button variant="outline" onClick={() => downloadController.current?.abort()}>Cancel download</Button>}<p className="input-description">Downloads are saved in this browser when storage permits. After refreshing, completed downloads are restored and verified automatically. Partial downloads resume file by file with Download models. Imports are not saved. The model host receives download requests; no files or audio are uploaded.</p><Button variant="ghost" disabled={checking} onClick={clearModelCache}>Delete saved models</Button></section><section className="tool-section"><div className="tool-heading"><Mic size={18}/><h2>Your microphone</h2></div><label htmlFor="microphone">Audio input</label><select id="microphone" data-slot="native-select" value={device} disabled={['listening', 'starting', 'stopping'].includes(phase)} onChange={e => setDevice(e.target.value)}><option value="">System default</option>{devices.filter(d => d.deviceId).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}</select><p className="input-description">Choose the microphone closest to the conversation. Stop captions before switching.</p><Button variant="outline" disabled={live} onClick={selectMicrophones}>Show microphone names</Button><div className="signal-line"><span className={`signal-bars level-${level}`} aria-hidden="true">{[1,2,3,4,5].map(n => <i key={n}/>)}</span><span>{live ? level ? 'Audio detected' : 'No microphone signal' : 'Microphone off'}</span></div></section>
+        <section className="tool-section"><h2 className="tool-heading">Reading comfort</h2><Button variant="outline" disabled={!session.segments.length} onClick={exportText}>Export text</Button><Button variant="outline" aria-pressed={contrast} onClick={() => setContrast(!contrast)}>High contrast</Button><p><label><input type="checkbox" checked={announce} onChange={e => setAnnounce(e.target.checked)}/> Announce captions to screen readers</label></p><Button variant="ghost" disabled={phase !== 'ready' && phase !== 'unloaded'} onClick={() => { setSession({ id: 'browser', segments: [] }); setHeld(null); setHolding(false); }}>Clear conversation</Button></section>
         <section className="privacy-card"><ShieldCheck size={20} aria-hidden="true"/><div><h2>Audio stays in this browser</h2><p>No inference server, recording, or audio uploads. Refresh clears the conversation. Models are imported or downloaded on request; app code loads from this website. Only model files may be saved, never conversations.</p></div></section>
-        <section className="tool-section"><label htmlFor="execution-device">Processing</label><select id="execution-device" data-slot="native-select" value={deviceMode} disabled={phase !== 'unloaded'} onChange={event => setDeviceMode(event.target.value)}><option value="webgpu">WebGPU speech + speakers</option><option value="wasm">CPU only</option></select><p className="input-description">Speech encoding and speaker detection use this device’s GPU in separate workers. Token decoding stays on CPU. No automatic CPU fallback. CPU uses one thread without cross-origin isolation.</p><label htmlFor="cpu-mode">Worker scheduling</label><select id="cpu-mode" data-slot="native-select" value={deviceMode === 'webgpu' ? 'parallel' : cpuMode} disabled={phase !== 'unloaded' || deviceMode === 'webgpu'} onChange={event => setCpuMode(event.target.value)}><option value="sequential">Shared worker</option><option value="parallel">Separate workers (experimental)</option></select><p className="input-description">WebGPU always runs speech and speaker detection in separate workers, so speech does not wait for speaker labels. Both models share GPU capacity. CPU-only scheduling can be chosen before loading models.</p></section>
-        <p className="small-note">Experimental · English captions · Nemotron ASR int4 + diarization q8. Processing speed depends on the device. {speed !== null && <span id="cpu-speed">Processing: {speed.toFixed(2)}× real time (1× keeps pace).</span>}</p>
+        <section className="tool-section"><label htmlFor="execution-device">Processing</label><select id="execution-device" data-slot="native-select" value={deviceMode} disabled={phase !== 'unloaded' || modelProfile === 'int8-dynamic'} onChange={event => setDeviceMode(event.target.value)}><option value="webgpu">WebGPU speech + speakers</option><option value="wasm">CPU only</option></select><p className="input-description">{deviceMode === 'webgpu' ? 'Speech and speaker detection use the GPU; token decoding uses the CPU.' : 'Speech and speaker detection use the CPU. Phone speed and memory use are not yet validated.'} CPU uses one thread without cross-origin isolation.</p><label htmlFor="cpu-mode">Worker scheduling</label><select id="cpu-mode" data-slot="native-select" value={deviceMode === 'webgpu' ? 'parallel' : cpuMode} disabled={phase !== 'unloaded' || deviceMode === 'webgpu'} onChange={event => setCpuMode(event.target.value)}><option value="sequential">Shared worker</option><option value="parallel">Separate workers (experimental)</option></select><p className="input-description">WebGPU always runs speech and speaker detection in separate workers, so speech does not wait for speaker labels. Both models share GPU capacity. CPU-only scheduling can be chosen before loading models.</p></section>
+        <Diagnostics snapshot={diagnostics} modelProfile={modelProfile} device={deviceMode} threadBudget={threadBudget} onThreadBudget={setThreadBudget} unloaded={phase === 'unloaded'}/>
+        <p className="small-note">Experimental · English captions · {modelProfiles[modelProfile].label} + diarization q8. Processing speed depends on the device. {speed !== null && <span id="cpu-speed">Processing: {speed.toFixed(2)}× real time (1× keeps pace).</span>}</p>
       </aside></div>
     </main>
   </div>;

@@ -1,0 +1,72 @@
+{
+  "id": "danielbodart/nemotron-speech-600m-onnx",
+  "sha": "03c03d7b9fd16e3cdd5c147f1bd4ad2242aafa75",
+  "directory": "asr-int8",
+  "files": [
+    {
+      "rfilename": "config.json",
+      "size": 3641,
+      "blobId": "7f9841bd0c00b6f73c5ea6f8c7a3daaf66102980"
+    },
+    {
+      "rfilename": "int8-dynamic/decoder_model.onnx",
+      "size": 7720,
+      "blobId": "4661760716ed79d940647cd4f291c302543462b0",
+      "lfs": {
+        "sha256": "50fa2f8de73af938fd11cbced826dbb5af12da0688b4e4f964be7c1f183b6f94",
+        "size": 7720
+      }
+    },
+    {
+      "rfilename": "int8-dynamic/decoder_model.onnx.data",
+      "size": 35772420,
+      "blobId": "ed2629c9e8de55bc68091e3bb49c0eed9ccae2d9",
+      "lfs": {
+        "sha256": "8b9d9b7047df50f59271acb53f47871c3ff70ff571c9bedea9e36901d29c0037",
+        "size": 35772420
+      }
+    },
+    {
+      "rfilename": "int8-dynamic/encoder_model.onnx",
+      "size": 44533336,
+      "blobId": "fb9e4c8f82c4a35c44e3118006a428c0f6f936c7",
+      "lfs": {
+        "sha256": "8088d697ec0a71e98f59f31ee5ee36d8dd4f5a3d7a209bccd60b9b4f5f62471f",
+        "size": 44533336
+      }
+    },
+    {
+      "rfilename": "int8-dynamic/encoder_model.onnx.data",
+      "size": 837750784,
+      "blobId": "3ab012b8e66d1def3b7a4f605260c850a26999c4",
+      "lfs": {
+        "sha256": "a17e1bebab700803033b8b2122ebf2831f913ae57fb7e86447c529e5111327eb",
+        "size": 837750784
+      }
+    },
+    {
+      "rfilename": "shared/filterbank.bin",
+      "size": 131584,
+      "blobId": "4457afc380474a3a3acfe26a275f9156061262e7",
+      "lfs": {
+        "sha256": "219cf29e906c3a1485963959bfe708f410cda746592ffe9b6800acf78436b1a5",
+        "size": 131584
+      }
+    },
+    {
+      "rfilename": "shared/filterbank.meta",
+      "size": 57,
+      "blobId": "3d40129457bdfc7798231e9708118e1c0f13ecc8"
+    },
+    {
+      "rfilename": "shared/preprocessor.config",
+      "size": 136,
+      "blobId": "714bb1dc0667a22e2c154499632049976852b7b4"
+    },
+    {
+      "rfilename": "shared/tokens.txt",
+      "size": 8941,
+      "blobId": "369c347a49d3a565e39cc00f12cab9fa27bf14ca"
+    }
+  ]
+}

@@ -28,13 +28,16 @@ export interface StreamProgress {
 type Sessions = {
   encoder: ort.InferenceSession;
   decoder: ort.InferenceSession;
-  joint: ort.InferenceSession;
+  joint?: ort.InferenceSession;
 };
 
 export class NemotronBrowserASR {
   private sessions: Sessions | null = null;
+  private cpuInt8 = false;
+  private filterbank?: Float32Array;
+  private get blankId() { return this.cpuInt8 ? 1024 : BLANK_ID; }
   private jointMode: 'logits' | 'argmax' | 'verify' = 'argmax';
-  public metrics = { encoderMs: 0, decoderMs: 0, jointMs: 0, selectMs: 0, verifiedFrames: 0 };
+  public metrics = { featuresMs: 0, encoderMs: 0, decoderMs: 0, jointMs: 0, selectMs: 0, verifiedFrames: 0, encoderCalls: 0, decoderCalls: 0, firstEncoderMs: 0, maxEncoderMs: 0 };
   private vocabulary: string[] = [];
   private transcriptText = "";
   public words: {text: string, time: number}[] = [];
@@ -50,18 +53,56 @@ export class NemotronBrowserASR {
   private streamProcessedSamples = 0;
   private streamLanguageId = 101;
 
-  async load(onStatus: (message: string) => void, options: {readModel?: (name: string) => Promise<Uint8Array>, wasmPaths?: string, device?: 'wasm' | 'webgpu', threads?: number, jointMode?: 'logits' | 'argmax' | 'verify'} = {}): Promise<void> {
+  async load(onStatus: (message: string) => void, options: {fixedShapes?: boolean, profile?: 'standard' | 'int8-dynamic', readModel?: (name: string) => Promise<Uint8Array>, wasmPaths?: string, device?: 'wasm' | 'webgpu', threads?: number, jointMode?: 'logits' | 'argmax' | 'verify'} = {}): Promise<void> {
     if (this.sessions) return;
     ort.env.wasm.numThreads = globalThis.crossOriginIsolated
       ? Math.max(1, Math.min(options.threads ?? 4, navigator.hardwareConcurrency || 1))
       : 1;
     ort.env.wasm.wasmPaths = options.wasmPaths || '/ort/';
-    onStatus("Loading local tokenizer");
-    const tokenizer = await fetchJson(`${MODEL_ROOT}/tokenizer.json`);
-    this.vocabulary = tokenizer.model.vocab.map((entry: [string, number]) => entry[0]);
-    this.jointMode = options.jointMode ?? "argmax";
-    const gpu = options.device === "webgpu";
-    this.sessions = await createSessions([gpu ? "webgpu" : "wasm"], gpu, onStatus, this.jointMode, options.readModel);
+    this.cpuInt8 = options.profile === 'int8-dynamic';
+    if (this.cpuInt8) {
+      if (options.device === 'webgpu' || !options.readModel) throw Error('INT8 dynamic requires CPU and local model files');
+      const read = options.readModel;
+      const tokenText = new TextDecoder().decode(await read('shared/tokens.txt'));
+      this.vocabulary = [];
+      for (const line of tokenText.trim().split(/\r?\n/)) {
+        const match = /^(.*)\s+(\d+)$/.exec(line);
+        if (!match) throw Error('Invalid CPU model vocabulary');
+        this.vocabulary[Number(match[2])] = match[1];
+      }
+      this.filterbank = new Float32Array((await read('shared/filterbank.bin')).slice().buffer);
+      let encoder: ort.InferenceSession | undefined;
+      try {
+        const create = async (name: string) => {
+          onStatus(`Loading CPU ${name}`);
+          return ort.InferenceSession.create(await read(`int8-dynamic/${name}_model.onnx`), {
+            executionProviders: ['wasm'], graphOptimizationLevel: 'all',
+            // The pinned export always receives a 65-frame chunk (including flush padding).
+            ...(options.fixedShapes ? { freeDimensionOverrides: name === 'encoder' ? {
+              audio_signal_dynamic_axes_1: 1, audio_signal_dynamic_axes_2: 65, length_dynamic_axes_1: 1,
+              cache_last_channel_dynamic_axes_1: 1, cache_last_channel_dynamic_axes_2: 70,
+              cache_last_time_dynamic_axes_1: 1, cache_last_time_dynamic_axes_2: 8,
+              cache_last_channel_len_dynamic_axes_1: 1,
+            } : {
+              encoder_outputs_dynamic_axes_1: 1, encoder_outputs_dynamic_axes_2: 1,
+              targets_dynamic_axes_1: 1, targets_dynamic_axes_2: 1, target_length_dynamic_axes_1: 1,
+              input_states_1_dynamic_axes_1: 1, input_states_2_dynamic_axes_1: 1,
+            } } : {}),
+            externalData: [{ path: `${name}_model.onnx.data`, data: await read(`int8-dynamic/${name}_model.onnx.data`) }],
+          });
+        };
+        encoder = await create('encoder');
+        const decoder = await create('decoder');
+        this.sessions = { encoder, decoder };
+      } catch (error) { await encoder?.release(); throw error; }
+    } else {
+      onStatus("Loading local tokenizer");
+      const tokenizer = await fetchJson(`${MODEL_ROOT}/tokenizer.json`);
+      this.vocabulary = tokenizer.model.vocab.map((entry: [string, number]) => entry[0]);
+      this.jointMode = options.jointMode ?? "argmax";
+      const gpu = options.device === "webgpu";
+      this.sessions = await createSessions([gpu ? "webgpu" : "wasm"], gpu, onStatus, this.jointMode, options.readModel);
+    }
     this.reset();
   }
 
@@ -122,7 +163,9 @@ export class NemotronBrowserASR {
     const paddedSamples = flush
       ? this.streamProcessedSamples + chunksToRun * CHUNK_SAMPLES
       : this.streamAudio.length;
-    const mel = logMelSpectrogram(this.streamAudio, paddedSamples);
+    const featuresStarted = performance.now();
+    const mel = logMelSpectrogram(this.streamAudio, paddedSamples, this.filterbank);
+    this.metrics.featuresMs += performance.now() - featuresStarted;
     let partialSent = false;
     for (let chunk = 0; chunk < chunksToRun; chunk++) {
       const frameStart = Math.floor(this.streamProcessedSamples / HOP_LENGTH);
@@ -149,8 +192,14 @@ export class NemotronBrowserASR {
     onToken?: () => void,
   ): Promise<void> {
     if (!this.sessions) throw new Error("Model is not loaded");
-    const features = buildFeatureChunk(mel, frameStart, mainFrames);
-    const audioSignal = new ort.Tensor("float32", features, [1, PRE_ENCODE_CACHE + CHUNK_FRAMES, N_MELS]);
+    let features = buildFeatureChunk(mel, frameStart, mainFrames);
+    const width = PRE_ENCODE_CACHE + CHUNK_FRAMES;
+    if (this.cpuInt8) {
+      const bandMajor = new Float32Array(features.length);
+      for (let f = 0; f < width; f++) for (let m = 0; m < N_MELS; m++) bandMajor[m * width + f] = features[f * N_MELS + m];
+      features = bandMajor;
+    }
+    const audioSignal = new ort.Tensor("float32", features, this.cpuInt8 ? [1, N_MELS, width] : [1, width, N_MELS]);
     const length = int64Tensor(PRE_ENCODE_CACHE + CHUNK_FRAMES);
     const langId = int64Tensor(languageId);
     let result: ort.InferenceSession.OnnxValueMapType;
@@ -162,20 +211,24 @@ export class NemotronBrowserASR {
         cache_last_channel: this.cacheChannel,
         cache_last_time: this.cacheTime,
         cache_last_channel_len: this.cacheLength,
-        lang_id: langId,
+        ...(this.cpuInt8 ? {} : { lang_id: langId }),
       });
     } finally {
-      this.metrics.encoderMs += performance.now() - encoderStarted;
+      const duration = performance.now() - encoderStarted;
+      this.metrics.encoderMs += duration;
+      if (!this.metrics.encoderCalls++) this.metrics.firstEncoderMs = duration;
+      this.metrics.maxEncoderMs = Math.max(this.metrics.maxEncoderMs, duration);
       dispose(audioSignal, length, langId);
     }
 
     dispose(this.cacheChannel, this.cacheTime, this.cacheLength);
     this.cacheChannel = result.cache_last_channel_next;
     this.cacheTime = result.cache_last_time_next;
-    this.cacheLength = result.cache_last_channel_len_next;
+    this.cacheLength = this.cpuInt8 ? result.cache_last_channel_next_len : result.cache_last_channel_len_next;
     try {
       const encodedLength = Number((result.encoded_lengths.data as BigInt64Array)[0]);
-      await this.decodeEncoderOutput(result.outputs, encodedLength, onToken);
+      if (this.cpuInt8) await this.decodeCpuOutput(result.outputs, encodedLength, onToken);
+      else await this.decodeEncoderOutput(result.outputs, encodedLength, onToken);
     } finally {
       dispose(result.encoded_lengths, result.outputs);
     }
@@ -197,13 +250,54 @@ export class NemotronBrowserASR {
     dispose(this.cacheChannel, this.cacheTime, this.cacheLength, this.hidden, this.cell);
     this.transcriptText = "";
     this.words = []; this.frameCursor = 0;
-    this.metrics = { encoderMs: 0, decoderMs: 0, jointMs: 0, selectMs: 0, verifiedFrames: 0 };
-    this.lastToken = BLANK_ID;
-    this.cacheChannel = zeros([1, ENCODER_LAYERS, LEFT_CONTEXT, HIDDEN_SIZE]);
+    this.metrics = { featuresMs: 0, encoderMs: 0, decoderMs: 0, jointMs: 0, selectMs: 0, verifiedFrames: 0, encoderCalls: 0, decoderCalls: 0, firstEncoderMs: 0, maxEncoderMs: 0 };
+    this.lastToken = this.cpuInt8 ? 0 : BLANK_ID;
+    this.cacheChannel = zeros([1, ENCODER_LAYERS, this.cpuInt8 ? 70 : LEFT_CONTEXT, HIDDEN_SIZE]);
     this.cacheTime = zeros([1, ENCODER_LAYERS, HIDDEN_SIZE, CONV_CONTEXT]);
     this.cacheLength = int64Tensor(0);
     this.hidden = zeros([DECODER_LAYERS, 1, DECODER_HIDDEN]);
     this.cell = zeros([DECODER_LAYERS, 1, DECODER_HIDDEN]);
+  }
+
+  private async decodeCpuOutput(encoded: ort.Tensor, frames: number, onToken?: () => void): Promise<void> {
+    const data = encoded.data as Float32Array;
+    const timeSize = Number(encoded.dims[2]);
+    const count = Math.min(frames, timeSize);
+    const frameData = new Float32Array(HIDDEN_SIZE);
+    const frame = new ort.Tensor('float32', frameData, [1, HIDDEN_SIZE, 1]);
+    const tokenData = new Int32Array(1);
+    const target = new ort.Tensor('int32', tokenData, [1, 1]);
+    const targetLength = new ort.Tensor('int32', Int32Array.of(1), [1]);
+    try {
+      for (let f = 0; f < count; f++) {
+        for (let h = 0; h < HIDDEN_SIZE; h++) frameData[h] = data[h * timeSize + f];
+        for (let symbol = 0; symbol < MAX_SYMBOLS_PER_STEP; symbol++) {
+          tokenData[0] = this.lastToken;
+          const started = performance.now();
+          const result = await this.sessions!.decoder.run({
+            encoder_outputs: frame, targets: target, target_length: targetLength,
+            input_states_1: this.hidden, input_states_2: this.cell,
+          });
+          this.metrics.decoderMs += performance.now() - started; this.metrics.decoderCalls++;
+          let accepted = false;
+          try {
+            const logits = result.outputs.data as Float32Array;
+            let token = 0;
+            for (let v = 1; v < logits.length; v++) if (logits[v] > logits[token]) token = v;
+            if (token === this.blankId) break;
+            dispose(this.hidden, this.cell);
+            this.hidden = result.output_states_1; this.cell = result.output_states_2;
+            accepted = true; this.lastToken = token;
+            this.tokenTime = (this.frameCursor + f) * 0.08;
+            this.appendToken(token); onToken?.();
+          } finally {
+            for (const [key, value] of Object.entries(result)) {
+              if (!accepted || !['output_states_1', 'output_states_2'].includes(key)) value.dispose();
+            }
+          }
+        }
+      }
+    } finally { this.frameCursor += count; dispose(frame, target, targetLength); }
   }
 
   private async decodeEncoderOutput(encoded: ort.Tensor, frames: number, onToken?: () => void): Promise<void> {
@@ -241,7 +335,7 @@ export class NemotronBrowserASR {
               h_in: this.hidden,
               c_in: this.cell,
             });
-            this.metrics.decoderMs += performance.now() - decoderStarted;
+            this.metrics.decoderMs += performance.now() - decoderStarted; this.metrics.decoderCalls++;
             decoderOutput = decoderResult.decoder_output;
             nextHidden = decoderResult.h_out;
             nextCell = decoderResult.c_out;
@@ -266,7 +360,7 @@ export class NemotronBrowserASR {
           let token = BLANK_ID;
           try {
             const jointStarted = performance.now();
-            jointResult = await this.sessions.joint.run({
+            jointResult = await this.sessions.joint!.run({
               encoder_output: encoderBatch ?? encoderFrame,
               decoder_output: decoderForJoint,
             });

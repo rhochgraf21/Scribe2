@@ -1,18 +1,22 @@
 import { CaptionUpdates } from './caption-updates.js';
 
 // One budget for both runtimes. numThreads includes each worker's calling thread.
-export function threadPlan(mode, hardware = 1, isolated = false, device = 'wasm') {
+export function threadPlan(mode, hardware = 1, isolated = false, device = 'wasm', threadBudget = 4) {
   const cores = Math.max(1, Math.floor(Number(hardware) || 1));
-  const budget = isolated ? Math.min(4, cores) : 1;
+  if (![1, 2, 4, 6, 8].includes(threadBudget)) throw Error('Invalid CPU thread budget');
+  const budget = isolated ? Math.min(threadBudget, cores) : 1;
   if (device === 'webgpu') return { mode:'parallel', asr:1, diar:Math.max(1,budget-1), budget:Math.max(2,budget) };
   if (mode !== 'parallel' || budget < 2) return { mode:'sequential', both:budget, budget };
-  return { mode:'parallel', asr:budget - 1, diar:1, budget };
+  // Six-thread preset leaves two threads for speech and four for speakers.
+  const asr = threadBudget === 6 ? Math.min(2, Math.ceil(budget / 2)) : Math.ceil(budget / 2);
+  return { mode:'parallel', asr, diar:budget - asr, budget };
 }
 export class InferenceClient {
-  constructor({ device = 'wasm', mode = 'sequential', jointMode = 'argmax', hardware = globalThis.navigator?.hardwareConcurrency, isolated = globalThis.crossOriginIsolated, workerFactory = () => new Worker(new URL('./inference.worker.js', import.meta.url), { type:'module' }) } = {}) {
+  constructor({ device = 'wasm', mode = 'sequential', jointMode = 'argmax', threadBudget = 4, hardware = globalThis.navigator?.hardwareConcurrency, isolated = globalThis.crossOriginIsolated, workerFactory = () => new Worker(new URL('./inference.worker.js', import.meta.url), { type:'module' }) } = {}) {
     if (!['wasm','webgpu'].includes(device)) throw Error('Invalid execution device');
     this.device = device;
-    this.plan = threadPlan(mode, hardware, isolated, device);
+    this.plan = threadPlan(mode, hardware, isolated, device, threadBudget);
+    this.hardware = hardware; this.isolated = isolated;
     this.jointMode = jointMode;
     this.pendingLoads = [];
     this.onmessage = null; this.onerror = null; this.closed = false;
@@ -24,16 +28,28 @@ export class InferenceClient {
       return member;
     });
   }
+  diagnostics() {
+    return {
+      modelProfile: this.modelProfile, fixedShapes: this.fixedShapes,
+      plan: this.plan, hardwareConcurrency: this.hardware, crossOriginIsolated: this.isolated,
+      capturedSeconds: this.sentSamples / 16000,
+      workers: this.members.map(m => ({role:m.role, disabled:!!m.disabled, threads:m.threads,
+        speakerRuntimeOptions:m.speakerRuntimeOptions, speakerHistoryFrames:m.speakerHistoryFrames, speakerChunkFrames:m.speakerChunkFrames, speakerLookaheadFrames:m.speakerLookaheadFrames,
+        loadMs:m.loadMs, audioSeconds:m.processed/16000, computeMs:m.elapsedMs,
+        queuedSeconds:Math.max(0,(this.sentSamples-m.processed)/16000), metrics:m.metrics || {}})),
+    };
+  }
   emit(data) { if (!this.closed) this.onmessage?.({ data }); }
   fail(message) { this.emit({ type:'error', message }); this.terminate(); }
   receive(member,data) {
     if (this.closed || member.disabled) return;
     if (data.type === 'error') return this.fail(data.message);
     if (data.type === 'ready') {
-      member.ready = true;
+      member.ready = true; member.threads = data.threads; member.loadMs = data.loadMs;
+      member.speakerRuntimeOptions = data.speakerRuntimeOptions; member.speakerHistoryFrames = data.speakerHistoryFrames; member.speakerChunkFrames = data.speakerChunkFrames; member.speakerLookaheadFrames = data.speakerLookaheadFrames;
       const next = this.pendingLoads.shift();
       if (next) { this.emit({type:'status', message:'Speech model ready. Loading speaker detection…'}); next.member.worker.postMessage(next.data); }
-      if (this.members.every(m=>m.ready)) this.emit({ type:'ready', plan:this.plan, device:this.device });
+      if (this.members.every(m=>m.ready)) this.emit({ type:'ready', plan:this.plan, device:this.device, diagnostics:this.diagnostics() });
     } else if (data.type === 'words' || data.type === 'activity') {
       if (data.type === 'words') {
         this.words.length = data.from;
@@ -45,22 +61,23 @@ export class InferenceClient {
       const patch = this.updates.update(this.words);
       if (patch) this.emit({ type:'captions', ...patch });
     } else if (data.type === 'ack') {
-      member.processed += data.samples; member.elapsedMs = data.elapsedMs;
+      member.processed += data.samples; member.elapsedMs = data.elapsedMs; member.metrics = data.metrics;
       const completed = this.device === 'webgpu' ? this.members.find(m=>m.role==='asr').processed : Math.min(...this.members.map(m=>m.processed));
       const samples = completed - this.acked;
       if (samples > 0) {
         this.acked = completed;
-        this.emit({ type:'ack', samples, audioSeconds:completed / 16000, elapsedMs:Math.max(...this.members.map(m=>m.elapsedMs)) });
+        this.emit({ type:'ack', samples, audioSeconds:completed / 16000, elapsedMs:Math.max(...this.members.map(m=>m.elapsedMs)), diagnostics:this.diagnostics() });
       }
     } else if (data.type === 'stopped') {
       member.stopped = true; member.elapsedMs = data.elapsedMs; member.metrics = data.metrics;
-      if (this.members.every(m=>m.stopped || m.disabled)) this.emit({ type:'stopped', plan:this.plan, stages:this.members.map(({role,elapsedMs,metrics})=>({role,elapsedMs,metrics})) });
+      if (this.members.every(m=>m.stopped || m.disabled)) this.emit({ type:'stopped', plan:this.plan, diagnostics:this.diagnostics(), stages:this.members.map(({role,elapsedMs,metrics})=>({role,elapsedMs,metrics})) });
     } else this.emit(data);
   }
   postMessage(data) {
     if (this.closed) return;
     if (data.type === 'load') {
-      this.pendingLoads = this.members.map(member => ({member, data: { ...data, modelFiles: data.modelFiles ? Object.fromEntries(Object.entries(data.modelFiles).filter(([path]) => member.role === 'both' || path.startsWith(member.role + '/'))) : undefined, role:member.role, threads:this.plan[member.role], jointMode:this.jointMode, device:this.device }}));
+      this.modelProfile = data.modelProfile || 'standard'; this.fixedShapes = this.modelProfile === 'int8-dynamic' && data.fixedShapes !== false;
+      this.pendingLoads = this.members.map(member => ({member, data: { ...data, modelFiles: data.modelFiles ? Object.fromEntries(Object.entries(data.modelFiles).filter(([path]) => member.role === 'both' || (member.role === 'asr' ? path.startsWith('asr/') || path.startsWith('asr-int8/') : path.startsWith('diar/')))) : undefined, role:member.role, threads:this.plan[member.role], jointMode:this.jointMode, device:this.device }}));
       const first = this.pendingLoads.shift();
       first.member.worker.postMessage(first.data);
       return;
@@ -71,7 +88,7 @@ export class InferenceClient {
         this.updates.speakerDetectionEnded = true;
         this.emit({type:'warning',message:'Speaker detection is stopped. Live words continue; refresh to restart speaker detection.'});
       }
-      for (const member of this.members) { member.processed = member.elapsedMs = 0; member.stopped = false; }
+      for (const member of this.members) { member.processed = member.elapsedMs = 0; member.metrics = {}; member.stopped = false; }
     }
     if (data.type === 'audio') {
       // Transfer ownership; only the second worker needs an independent copy.

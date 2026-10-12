@@ -50,14 +50,14 @@ export function Conversation({ session, live, holding, heldSession, textSize, an
     setFollowing(node.scrollHeight - node.scrollTop - node.clientHeight < 48);
     rememberAnchor();
   };
-  return <div className="conversation-surface">
+  return <div className="conversation-surface" onFocusCapture={event => { if (event.target.closest('.speaker-editor')) setFollowing(false); }}>
     <div id="transcript" className={`caption-scroll caption-size-${textSize}`} ref={scroller} tabIndex={0} role="region" aria-label="Conversation transcript" aria-describedby="reading-help" aria-live="off" onScroll={scroll} onWheel={event => { if (event.deltaY < 0) setFollowing(false); }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) setFollowing(false); }}>
       <p id="reading-help" className="sr-only">Captions appear in conversation order and are corrected in place. Scroll to review. Hold text pauses visual updates without stopping the microphone.</p>
       {!turns.length ? <div className="caption-empty"><span className="empty-caption-icon" aria-hidden="true"><Captions size={36}/></span><h2>{live ? 'Listening. Your words will appear here.' : 'A clear place for the conversation.'}</h2><p>{live ? 'Speak naturally. Speaker labels will appear as voices are recognised.' : 'Choose your microphone, then start captions. Words appear here and improve in place.'}</p><div className="reading-example" aria-hidden="true"><span className="example-line"/><span className="example-line short"/></div></div> : <p className="caption-flow segment-text">
         {turns.map((turn, index) => {
           const name = view.speakers?.[turn.speaker] || (turn.speaker ? `Speaker ${turn.speaker}` : 'Speaker ?');
           return <span key={turn.id} data-turn={turn.id} className={`inline-turn voice-${Number(turn.speaker || 0) % 5}`}>
-            {index > 0 && ' '}<strong className="inline-speaker">[{name}]</strong>{' '}
+            {index > 0 && ' '}<SpeakerLabel id={turn.speaker} name={name} onRename={onRename}/>{' '}
             {turn.pieces.map((piece, pieceIndex) => <span key={pieceIndex} className={piece.draft ? 'caption-draft' : undefined}>{pieceIndex > 0 && !/^[,.;:!?]/.test(piece.text) ? ' ' : ''}{piece.text.replace(/\s+/gu, ' ')}</span>)}
           </span>;
         })}
@@ -67,4 +67,20 @@ export function Conversation({ session, live, holding, heldSession, textSize, an
     {(holding || !following) && <div className="return-bar"><span>{holding ? <><Pause size={16}/> Text held · listening {live ? 'continues' : 'stopped'}</> : 'You’re reviewing earlier captions'}</span><Button onClick={returnToLive} className="return-live"><ArrowDown size={16}/>{live ? 'Return to live' : 'Show latest text'}</Button></div>}
     <div className="sr-only" role="log" aria-live={announce ? 'polite' : 'off'} aria-relevant="text" aria-atomic="true">{announcement}</div>
   </div>;
+}
+
+function SpeakerLabel({ id, name, onRename }) {
+  const [editing, setEditing] = useState(null), [draft, setDraft] = useState('');
+  const trigger = useRef(null);
+  const close = () => { setEditing(null); requestAnimationFrame(() => trigger.current?.focus()); };
+  if (!id || !onRename) return <strong className="inline-speaker">[{name}]</strong>;
+  if (editing) return <span className="speaker-editor" onKeyDown={event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
+    if (event.key === 'Enter') { event.preventDefault(); if (draft.trim()) { onRename(editing, draft); close(); } }
+  }}>
+    <input autoFocus aria-label={`Name ${name}`} maxLength={80} value={draft} onChange={event => setDraft(event.target.value)}/>
+    <button type="button" disabled={!draft.trim()} onClick={() => { onRename(editing, draft); close(); }}>Save</button>
+    <button type="button" onClick={close}>Cancel</button>
+  </span>;
+  return <button ref={trigger} type="button" className="inline-speaker speaker-rename" aria-label={`Rename ${name}`} onClick={() => { setDraft(name); setEditing(id); }}>[{name}]</button>;
 }

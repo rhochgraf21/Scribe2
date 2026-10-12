@@ -13,6 +13,7 @@ await mkdir(`${root}/licenses`, { recursive:true });
 await cp('src/browser/ASR-LICENSE', `${root}/licenses/asr-reference.txt`);
 await cp('vendor/transformers/LICENSE', `${root}/licenses/transformers.txt`);
 await cp('vendor/PROVENANCE.json', `${root}/licenses/provenance.json`);
+await cp('config/cpu-model.json', `${root}/licenses/cpu-model-manifest.json`);
 await cp('config/browser-models.json', `${root}/licenses/model-manifest.json`);
 await writeFile(`${root}/index.html`, await readFile(`${root}/browser.html`));
 await writeFile(`${root}/.nojekyll`, '');

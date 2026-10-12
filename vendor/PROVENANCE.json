@@ -4,7 +4,8 @@
     "revision": "4993a4d3d6c65a1ad5f93c4aab5846f7321537d0",
     "scope": "src and LICENSE only; no upstream install scripts executed",
     "local_changes": [
-      "Removed unused mistral3 vision-to-sequence registry entry flagged by GitHub push protection; Nemotron imports are unchanged."
+      "Removed unused mistral3 vision-to-sequence registry entry flagged by GitHub push protection; Nemotron imports are unchanged.",
+      "Added an optional per-call timing observer to Nemotron diarization for model execution, cache updates, and tensor preparation; inference math is unchanged."
     ]
   },
   "asr_reference": {
@@ -14,6 +15,6 @@
       "src/nemotron.ts",
       "src/audio.ts"
     ],
-    "changes": "CPU WASM only, local models, original joint graph with JS argmax, approximate token times"
+    "changes": "Local-model browser integration with CPU and WebGPU execution, pinned INT8-dynamic fused decoder support, fixed input dimensions, approximate token times, and per-stage timing counters"
   }
 }

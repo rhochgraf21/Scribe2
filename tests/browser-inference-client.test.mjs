@@ -11,7 +11,7 @@ function harness(mode='parallel') {
   return {client,workers,messages};
 }
 test('separate runtimes share one bounded thread budget, with single-core fallback',()=>{
-  assert.deepEqual(threadPlan('parallel',12,true),{mode:'parallel',asr:3,diar:1,budget:4});
+  assert.deepEqual(threadPlan('parallel',12,true),{mode:'parallel',asr:2,diar:2,budget:4});
   assert.deepEqual(threadPlan('parallel',2,true),{mode:'parallel',asr:1,diar:1,budget:2});
   assert.equal(threadPlan('parallel',12,false).mode,'sequential');
   assert.equal(threadPlan('parallel',1,true).both,1);
@@ -19,8 +19,8 @@ test('separate runtimes share one bounded thread budget, with single-core fallba
 test('speech publishes before speaker results, while acknowledgements track the slower worker',()=>{
   const {client,workers:[asr,diar],messages}=harness();
   client.postMessage({type:'load'});
-  assert.equal(asr.sent[0].data.threads,3);assert.equal(diar.sent.length,0);
-  asr.emit({type:'ready'});assert.equal(diar.sent[0].data.threads,1);assert.equal(messages.at(-1).type,'status');
+  assert.equal(asr.sent[0].data.threads,2);assert.equal(diar.sent.length,0);
+  asr.emit({type:'ready'});assert.equal(diar.sent[0].data.threads,2);assert.equal(messages.at(-1).type,'status');
   diar.emit({type:'ready'});assert.equal(messages.at(-1).type,'ready');
   client.postMessage({type:'start'});
   asr.emit({type:'words',from:0,words:[{text:'Hello',time:.1}]});
@@ -88,4 +88,54 @@ test('WebGPU uses independent GPU workers and never retries on CPU',()=>{
   assert.equal(events.at(-1).message,'GPU unavailable');
   assert.ok(workers.every(w=>w.terminated));
   assert.throws(()=>new InferenceClient({device:'remote'}),/Invalid execution device/);
+});
+
+test('CPU model profile and files reach the speech worker, with separate speaker files',()=>{
+  const {client,workers:[asr,diar]}=harness();
+  client.postMessage({type:'load',modelProfile:'int8-dynamic',speakerChunkFrames:11,speakerHistoryFrames:200,modelFiles:{'asr-int8/int8-dynamic/encoder_model.onnx':{},'diar/config.json':{}}});
+  assert.equal(asr.sent[0].data.modelProfile,'int8-dynamic');
+  assert.deepEqual(Object.keys(asr.sent[0].data.modelFiles),['asr-int8/int8-dynamic/encoder_model.onnx']);
+  asr.emit({type:'ready'});
+  assert.deepEqual(Object.keys(diar.sent[0].data.modelFiles),['diar/config.json']);
+  assert.equal(diar.sent[0].data.speakerChunkFrames,11);
+  assert.equal(diar.sent[0].data.speakerHistoryFrames,200);
+  diar.emit({type:'ready',speakerChunkFrames:11,speakerLookaheadFrames:4,speakerHistoryFrames:200,speakerRuntimeOptions:{enableCpuMemArena:true,enableMemPattern:false,enableProfiling:false}});
+  assert.equal(client.diagnostics().workers[1].speakerChunkFrames,11);
+  assert.equal(client.diagnostics().workers[1].speakerLookaheadFrames,4);
+  assert.equal(client.diagnostics().workers[1].speakerHistoryFrames,200);
+  assert.equal(client.diagnostics().workers[1].speakerRuntimeOptions.enableCpuMemArena,true);
+  assert.equal(client.diagnostics().workers[1].speakerRuntimeOptions.enableMemPattern,false);
+});
+
+test('thread budget is bounded by device cores and isolation',()=>{
+  assert.deepEqual(threadPlan('parallel',12,true,'wasm',6),{mode:'parallel',asr:2,diar:4,budget:6});
+  assert.deepEqual(threadPlan('parallel',4,true,'wasm',6),{mode:'parallel',asr:2,diar:2,budget:4});
+  assert.equal(threadPlan('parallel',12,false,'wasm',6).both,1);
+  assert.equal(threadPlan('sequential',12,true,'wasm',2).both,2);
+  assert.equal(threadPlan('sequential',2,true,'wasm',8).both,2);
+  assert.equal(threadPlan('parallel',12,false,'wasm',8).both,1);
+  const plan=threadPlan('parallel',12,true,'wasm',8);
+  assert.equal(plan.asr+plan.diar,8);
+  assert.throws(()=>threadPlan('sequential',12,true,'wasm',99),/Invalid/);
+});
+test('diagnostics distinguish worker queues and stage timings and reset with the session',()=>{
+  const {client,workers:[asr,diar],messages}=harness();
+  client.postMessage({type:'start'});
+  client.postMessage({type:'audio',samples:new Float32Array(16000).buffer});
+  asr.emit({type:'ack',samples:16000,elapsedMs:500,metrics:{encoderMs:450,decoderMs:50}});
+  diar.emit({type:'ack',samples:8000,elapsedMs:200,metrics:{speakerMs:180,speakerInferenceMs:175,speakerCacheMs:2,speakerTensorMs:3}});
+  const report=messages.at(-1).diagnostics;
+  assert.equal(report.capturedSeconds,1);
+  assert.equal(report.workers[0].queuedSeconds,0);
+  assert.equal(report.workers[1].queuedSeconds,.5);
+  assert.equal(report.workers[0].metrics.encoderMs,450);
+  assert.equal(report.workers[1].metrics.speakerMs,180);
+  assert.equal(report.workers[1].metrics.speakerInferenceMs,175);
+  assert.equal(report.workers[1].metrics.speakerCacheMs,2);
+  assert.equal(report.workers[1].metrics.speakerTensorMs,3);
+  assert.ok(!('words' in report));
+  client.postMessage({type:'start'});
+  assert.equal(client.diagnostics().capturedSeconds,0);
+  assert.deepEqual(client.diagnostics().workers[0].metrics,{});
+  assert.deepEqual(client.diagnostics().workers[1].metrics,{});
 });

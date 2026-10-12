@@ -447,9 +447,13 @@ export class Nemotron3DiarizationForAudioFrameClassification extends Nemotron3Di
      * @param {number} [model_inputs.num_lookahead_frames=null] Streaming mode: number of trailing encoder frames of the
      * input that are look-ahead only. They are attended to, but their logits are not returned and they do not join
      * the FIFO queue, as they open the next chunk. The processor sets it for every chunk but the last one of a session.
+     * @param {function(Object): void} [model_inputs.on_profile] Optional per-call timing observer.
+     * Reports network execution, cache updates, and remaining tensor/host work in milliseconds.
      * @returns {Promise<Nemotron3DiarizationOutput>}
      */
-    async forward({ input_features, attention_mask = null, speaker_cache = null, num_lookahead_frames = null }) {
+    async forward({ input_features, attention_mask = null, speaker_cache = null, num_lookahead_frames = null, on_profile = null }) {
+        const profileStart = on_profile ? performance.now() : 0;
+        let inferenceMs = 0, cacheMs = 0;
         const config = /** @type {any} */ (this.config);
         const is_streaming = num_lookahead_frames !== null || speaker_cache !== null;
         if (speaker_cache === null) {
@@ -512,11 +516,14 @@ export class Nemotron3DiarizationForAudioFrameClassification extends Nemotron3Di
                 );
             }
 
+            const inferenceStart = on_profile ? performance.now() : 0;
             const outputs = await sessionRun(session, {
                 input_features: chunk_features,
                 cached_embeds,
                 attention_mask: new Tensor('int64', step_mask, [batch_size, step_length]),
             });
+            if (on_profile) inferenceMs += performance.now() - inferenceStart;
+            const cacheStart = on_profile ? performance.now() : 0;
             speaker_cache.update(
                 outputs.chunk_embeds,
                 outputs.logits,
@@ -525,15 +532,19 @@ export class Nemotron3DiarizationForAudioFrameClassification extends Nemotron3Di
                 step_mask,
             );
 
+            if (on_profile) cacheMs += performance.now() - cacheStart;
             const start_logit_idx = cached_length * subsampling_factor;
             const end_logit_idx = (cached_length + num_chunk_frames) * subsampling_factor;
             logits.push(outputs.logits.slice(null, [start_logit_idx, end_logit_idx], null));
         }
 
-        return new Nemotron3DiarizationOutput({
+        const result = new Nemotron3DiarizationOutput({
             // with no look-ahead, the last encoder frame may be the padding added by feature stacking
             logits: cat(logits, 1).slice(null, [0, num_frames], null),
             speaker_cache: is_streaming ? speaker_cache : null,
         });
+        on_profile?.({ speakerInferenceMs: inferenceMs, speakerCacheMs: cacheMs,
+            speakerTensorMs: Math.max(0, performance.now() - profileStart - inferenceMs - cacheMs) });
+        return result;
     }
 }

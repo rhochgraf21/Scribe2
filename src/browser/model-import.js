@@ -1,11 +1,18 @@
 import { openModelStore } from './model-storage.js';
 import chunks from '../../config/browser-model-chunks.json' with { type: 'json' };
+import cpuModel from '../../config/cpu-model.json' with { type: 'json' };
+import cpuChunks from '../../config/cpu-model-chunks.json' with { type: 'json' };
 import manifest from '../../config/browser-models.json' with { type: 'json' };
 
-export const modelEntries = manifest.flatMap(model => model.files.filter(file => file.rfilename !== 'README.md').map(file => ({
+const entriesFor = models => models.flatMap(model => model.files.filter(file => file.rfilename !== 'README.md').map(file => ({
   ...file, path: `${model.directory}/${file.rfilename}`,
   url: `https://huggingface.co/${model.id}/resolve/${model.sha}/${file.rfilename}`,
 })));
+export const modelEntries = entriesFor(manifest);
+export const modelProfiles = {
+  standard: { label: 'Nemotron 3.5 · original', entries: modelEntries },
+  'int8-dynamic': { label: 'Nemotron 600M INT8 · CPU', entries: entriesFor([cpuModel, ...manifest.filter(m => m.directory === 'diar')]) },
+};
 export const modelDownloadMB = Math.ceil(modelEntries.reduce((n, file) => n + file.size, 0) / 1e6);
 export const MODEL_CACHE = 'scribe-verified-models-v1';
 
@@ -14,7 +21,7 @@ async function digest(bytes, algorithm = 'SHA-256') {
   return Array.from(new Uint8Array(hash), n => n.toString(16).padStart(2, '0')).join('');
 }
 function chunkPlan(entry) {
-  const plan = chunks.files[entry.path];
+  const plan = (cpuChunks.files[entry.path] || chunks.files[entry.path]);
   return plan?.sha256 === entry.lfs?.sha256 ? plan : null;
 }
 async function verifyBlock(bytes, entry, index) {
