@@ -3,9 +3,19 @@ import * as ort from 'onnxruntime-web/webgpu';
 import { env } from '../../vendor/transformers/src/env.js';
 import { Nemotron3DiarizationProcessor } from '../../vendor/transformers/src/models/nemotron3_diarization/processing_nemotron3_diarization.js';
 import { Nemotron3DiarizationForAudioFrameClassification } from '../../vendor/transformers/src/models/nemotron3_diarization/modeling_nemotron3_diarization.js';
+import { MODEL_CLASS_TO_NAME_MAPPING, MODEL_NAME_TO_CLASS_MAPPING, MODEL_TYPE_MAPPING, MODEL_TYPES } from '../../vendor/transformers/src/models/modeling_utils.js';
 import { readModelBuffer } from './model-buffer';
 import { NemotronBrowserASR } from './nemotron';
+import { MoonshineBrowserASR } from './moonshine-streaming.js';
+import { wordChangeStart } from './moonshine-words.js';
 import { CaptionUpdates, processCaptionBatch } from './caption-updates';
+
+// Direct imports bypass Transformers' full model registry. Register just the
+// class we use, with the same EncoderOnly type as the upstream registry.
+const diarizationClassName = 'Nemotron3DiarizationForAudioFrameClassification';
+MODEL_CLASS_TO_NAME_MAPPING.set(Nemotron3DiarizationForAudioFrameClassification, diarizationClassName);
+MODEL_NAME_TO_CLASS_MAPPING.set(diarizationClassName, Nemotron3DiarizationForAudioFrameClassification);
+MODEL_TYPE_MAPPING.set(diarizationClassName, MODEL_TYPES.EncoderOnly);
 
 // Defence in depth: CSP also confines all network requests to this static origin.
 let modelFiles = {};
@@ -29,7 +39,7 @@ env.localModelPath = '/models/';
 env.useBrowserCache = false;
 env.useFSCache = false;
 let asr, model, processor, cache = null, pcm = new Float32Array(), base = 0, cursor = 0;
-let role = 'both', lastWordCount = 0, lastWordText = '', threads = 1;
+let role = 'both', lastWords = [], threads = 1;
 let speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
 let compareSpeakerOutputs = false;
 let loadMs = 0, speakerProfiling = false, operatorProfile, restoreProfileConsole, speakerRuntimeOptions;
@@ -41,7 +51,7 @@ function reset() {
   speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
   if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; }
   cache = null; pcm = new Float32Array(); base = cursor = totalSamples = elapsedMs = 0;
-  updates = new CaptionUpdates(); asr?.startStream(101); lastWordCount = 0; lastWordText = ''; active = true;
+  updates = new CaptionUpdates(); asr?.startStream(101); lastWords = []; active = true;
 }
 async function diarize(flush) {
   while (true) {
@@ -85,10 +95,10 @@ function captions() {
   if (role === 'diar') return;
   if (role === 'asr') {
     const words = asr.words;
-    if (words.length === lastWordCount && (words.at(-1)?.text || '') === lastWordText) return;
-    const from = Math.max(0, lastWordCount - 1);
+    const from = wordChangeStart(lastWords, words);
+    if (from === words.length && from === lastWords.length) return;
     send('words', { from, words: words.slice(from) });
-    lastWordCount = words.length; lastWordText = words.at(-1)?.text || '';
+    lastWords = words.map(word => ({ ...word }));
     return;
   }
   const patch = updates.update(asr.words);
@@ -105,8 +115,8 @@ self.onmessage = ({ data }) => {
       if (!assetBase || new URL(assetBase).origin !== self.location.origin) throw Error('Invalid asset origin');
       const device = data.device || 'wasm';
       const profile = data.modelProfile || 'standard';
-      if (!['standard', 'int8-dynamic'].includes(profile)) throw Error('Invalid speech model');
-      if (profile === 'int8-dynamic' && device !== 'wasm') throw Error('The INT8 dynamic model requires CPU processing');
+      if (!['standard', 'int8-dynamic', 'moonshine-tiny', 'moonshine-small'].includes(profile)) throw Error('Invalid speech model');
+      if (profile !== 'standard' && device !== 'wasm') throw Error('The selected INT8 model requires CPU processing');
       if (!['wasm','webgpu'].includes(device)) throw Error('Invalid execution device');
       if (device === 'webgpu') {
         const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
@@ -119,8 +129,8 @@ self.onmessage = ({ data }) => {
         runtime.wasm.wasmPaths = new URL('ort/', assetBase).href; runtime.wasm.numThreads = threads; runtime.wasm.proxy = false;
       }
       if (role !== 'diar') {
-        asr = new NemotronBrowserASR();
-        await asr.load(status, { fixedShapes: data.fixedShapes !== false, profile, device, threads, readModel: name => readModelBuffer(modelFiles[(profile === 'int8-dynamic' ? 'asr-int8/' : 'asr/') + name]), wasmPaths: new URL('ort/', assetBase).href, jointMode: data.jointMode || 'argmax' });
+        asr = profile.startsWith('moonshine-') ? new MoonshineBrowserASR() : new NemotronBrowserASR();
+        await asr.load(status, { fixedShapes: data.fixedShapes !== false, profile, device, threads, readModel: name => readModelBuffer(modelFiles[(profile.startsWith('moonshine-') ? `${profile}/` : profile === 'int8-dynamic' ? 'asr-int8/' : 'asr/') + name]), wasmPaths: new URL('ort/', assetBase).href, jointMode: data.jointMode || 'argmax' });
       }
       if (role !== 'asr') {
         const runtimeOptions = data.speakerRuntimeOptions || {};

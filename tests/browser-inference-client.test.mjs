@@ -139,3 +139,21 @@ test('diagnostics distinguish worker queues and stage timings and reset with the
   assert.deepEqual(client.diagnostics().workers[0].metrics,{});
   assert.deepEqual(client.diagnostics().workers[1].metrics,{});
 });
+
+test('six requested CPU threads fall back to one without isolation, even on ten cores', () => {
+  assert.deepEqual(threadPlan('parallel', 10, false, 'wasm', 6), { mode:'sequential', both:1, budget:1 });
+  assert.deepEqual(threadPlan('parallel', 10, true, 'wasm', 6), { mode:'parallel', asr:2, diar:4, budget:6 });
+  assert.deepEqual(threadPlan('sequential', 10, true, 'wasm', 6), { mode:'sequential', both:6, budget:6 });
+});
+
+test('Moonshine model files are routed to speech only for both sizes',()=>{
+  for (const modelProfile of ['moonshine-tiny','moonshine-small']) {
+    const {client,workers:[asr,diar]}=harness();
+    const path=`${modelProfile}/frontend.onnx`;
+    client.postMessage({type:'load',modelProfile,modelFiles:{[path]:{},'diar/config.json':{}}});
+    assert.deepEqual(Object.keys(asr.sent[0].data.modelFiles),[path]);
+    assert.equal(asr.sent[0].data.modelProfile,modelProfile);
+    asr.emit({type:'ready'});
+    assert.deepEqual(Object.keys(diar.sent[0].data.modelFiles),['diar/config.json']);
+  }
+});

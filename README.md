@@ -1,6 +1,6 @@
 # Scribe — browser edition
 
-Live English captions with inline speaker labels. React, shadcn components, Atkinson Hyperlegible, ONNX Runtime Web, and locally imported Nemotron models. No inference backend, audio uploads, recording, or transcript storage. Refresh clears the conversation and imported file references.
+Live English captions with inline speaker labels. React, shadcn components, Atkinson Hyperlegible, ONNX Runtime Web, and local Nemotron or Moonshine speech models. No inference backend, audio uploads, recording, or transcript storage. Refresh clears the conversation and imported file references.
 
 ## Use
 
@@ -8,7 +8,7 @@ Open the HTTPS site in a browser with WebGPU support. Select **Download models**
 
 Existing local installations can copy their `browser-models` folder to another device. The approved repositories, immutable revisions, filenames, and integrity hashes are in `config/browser-models.json`. Downloads begin only when you click **Download models**. Progress and cancellation are available. Download requests go to Hugging Face and its approved CDN; credentials and referrer are omitted. Models are approximately 912 MB; verification and inference need additional RAM. Smaller devices may not keep up.
 
-WebGPU runs speech encoding and speaker detection in separate workers; they still share GPU resources. Token decoding runs on CPU. CPU-only mode is available, but GitHub Pages does not provide our local server's cross-origin isolation headers, so WASM uses one thread. Speaker assignments and word boundaries are approximate. If speaker detection falls over 15 seconds behind it stops, while captions continue with a visible warning.
+WebGPU runs speech encoding and speaker detection in separate workers; they still share GPU resources. Token decoding runs on CPU. CPU-only mode is available. On GitHub Pages, an app-scoped service worker adds cross-origin isolation headers and reloads once before the app starts, enabling WASM multithreading in supported browsers. If service workers or site storage are blocked, the app falls back to one CPU thread and explains the limitation in diagnostics. Speaker assignments and word boundaries are approximate. If speaker detection falls over 15 seconds behind it stops, while captions continue with a visible warning.
 
 ## Build and publish
 
@@ -32,11 +32,19 @@ For folder import, put the CPU repository's `int8-dynamic/`, `shared/`, and `con
 
 Click or tap an inline speaker label, type a name, and save (Enter) or cancel (Escape). Naming works while listening and while text is held. Names follow speaker IDs across live caption corrections and appear in **Export text**. They are cleared with the conversation, on starting a new conversation, or on refresh; they do not identify people across sessions.
 
+## Moonshine streaming on CPU
+
+**Moonshine Streaming Tiny INT8 · CPU** and **Moonshine Streaming Small INT8 · CPU** use the existing ONNX Runtime Web, with no additional Moonshine WASM dependency. Tiny speech files are about 78 MB (199 MB including speakers); Small speech files are about 209 MB (329 MB including speakers). These are download sizes, not peak memory. Start with Tiny on phones; iPhone memory and speed still need device testing. Select the model before downloading or importing, then load it normally. Folder imports use `moonshine-tiny/` or `moonshine-small/` alongside `diar/`.
+
+The MIT-licensed English exports are from [Masterx Tiny](https://huggingface.co/Masterx/moonshine-streaming-tiny-ONNX) and [Masterx Small](https://huggingface.co/Masterx/moonshine-streaming-small-ONNX), based on Moonshine AI's streaming models. Immutable revisions and full-file hashes are in `config/moonshine-models.json`; `config/moonshine-model-chunks.json` supplies the same bounded integrity checks as the other profiles. Both profiles share downloaded speaker files. Their license and manifest are included in the build's `licenses/` directory.
+
+The shared five-graph adapter carries frontend state, encodes a bounded sliding window with 320 ms lookahead, and decodes an updated phrase about every 800 ms. A simple energy endpointer closes phrases after 600 ms of quiet; a 12-second cap bounds attention caches during continuous speech. This can affect quiet speech and words crossing a forced phrase boundary. Stop flushes the final phrase; starting again resets model state. Active phrases can revise multiple words, so speaker attribution keeps their history until completion. This export has no word alignment outputs: word times are estimated from partial hypotheses, and speaker boundaries are less precise. Diagnostics identify this and report decoder limits. Existing speaker naming and exports work with both profiles.
+
 ## Performance diagnostics
 
 Expand **Performance diagnostics** to see configured threads, whether browser isolation allows multithreading, per-worker queued audio and compute capacity, and stage timings in milliseconds per audio second. The first/slowest encoder calls help distinguish warm-up from sustained work. Measurements are session averages; separate workers overlap, so their timings must not be summed to estimate end-to-end latency. Model file sizes and JavaScript heap sizes are not measurements of total process memory.
 
-**Download diagnostics** exports only timing counters, configuration, and browser details—no audio, captions, or speaker names. Before loading, the CPU thread budget can be set to 1, 2, 4, 6, or 8 (bounded by reported cores and browser isolation). More threads are not guaranteed to help. Compare the same audio and allow for warm-up; refresh before changing a loaded runtime's settings. The local server provides isolation headers; GitHub Pages still limits this setup to one WASM thread.
+**Download diagnostics** exports only timing counters, configuration, and browser details—no audio, captions, or speaker names. Before loading, the CPU thread budget can be set to 1, 2, 4, 6, or 8 (bounded by reported cores and browser isolation). More threads are not guaranteed to help. Compare the same audio and allow for warm-up; refresh before changing a loaded runtime's settings. The local server provides isolation headers directly. GitHub Pages uses `isolation-worker.js` to add the headers to same-origin app responses; it does not cache responses or intercept cross-origin model downloads. Its scope is the app directory, including repository subpaths. The startup reload is guarded against loops and happens before model loading or microphone use. Deploy the complete build, including `isolation-worker.js`, and verify that diagnostics says multithreading is available.
 
 For an explicit local benchmark build, run `SCRIBE_BROWSER_BENCHMARK=1 npm run build`. Its `browser-benchmark.html` exposes `runCpuBenchmark` for a test harness, using already verified models in browser storage. Production builds omit this entry point.
 
@@ -59,3 +67,17 @@ Summarize a captured report with `node scripts/summarize-speaker-runtime.mjs /pa
 The `accuracy_level=4` experiment uses `scripts/make-speaker-int8-activation-variant.cjs SOURCE OUTPUT` to generate a separate graph. It adds that attribute to all 127 8-bit, block-size-32 `MatMulNBits` nodes and asserts that removing those attributes recovers the original decoded graph exactly. External weights and verified browser storage are unchanged. The benchmark accepts `speakerAccuracyLevel: 4`, `speakerGraphBase64`, and its expected `speakerGraphSha256`; it checks the digest and substitutes the graph only in the in-memory benchmark file map. This override is absent from the production entry point. Level 0 uses the original graph.
 
 On the 90-second fixture, the original ran at 1.099× realtime and level 4 at 1.072× (about 2.5% slower in this single comparison). Captions/speaker assignments matched, as did a benchmark-only FNV-1a fingerprint across 72,000 raw output values. This is consistent with fallback to the existing float computation path, not proof of which internal kernel ran. The experiment showed no benefit and was not enabled in normal use. The benchmark records the variant hash, output fingerprint, and value count for reproducibility; ordinary recordings do not compute the fingerprint.
+
+### Table mode
+
+Choose **Table mode** on `browser.html` to arrange 2–8 seats. Drag a seat or focus it and use the arrow keys. Tap a seat to save a name. Once captions are running, ask that person to speak alone, then confirm the detected voice. Use **Try another voice** to retry; a voice already assigned elsewhere cannot be moved implicitly. Clear an incorrect voice match before assigning it to another seat.
+
+Choose **Follow a conversation**, then tap the people you want to follow. With nobody selected, captions show the whole group and name alerts remain enabled. With specific people selected, alerts only come from outside that selection. Only their identified captions appear in the main transcript; other and unidentified words remain in **Other conversation**. Enter your name or comma-separated nicknames for mention alerts. **Peek** and **Dismiss** preserve your selection. Long-press/right-click a matched seat (or Shift+F10 on a focused seat) to see its recent words. Rings indicate a recently captioned voice, rather than exact real-time speech activity.
+
+Names and positions survive mode switches and session restarts in the current page. Voice matches reset with each new caption session because speaker IDs are session-local. Refresh clears the table and conversation. Recognition, attribution, and name-based alerts can miss or misidentify speech; semantic references such as “him” do not trigger alerts.
+
+Validation: `npm test` covers filtering and mentions. From the parent workspace, `node scripts/qa-table-flow.mjs` builds a test-only fixture and checks confirmed voice matching, selection, mention previews, hold/resume, session reset, and mobile layouts in headless Chrome using controlled caption events. The fixture is excluded from production builds.
+
+Table fullscreen hides the conversation header and reading toolbar, with small exit/stop controls remaining accessible. Mention cards and speaker badges appear with the seating diagram. Your name is shared between your own seat and mention settings; enter it once in either place.
+
+Seat-count changes retain remaining names, voice matches, selections, and positions. A newly added seat starts unmatched; naming alone does not identify a voice. Use **Match a detected voice** to link an already-heard speaker to the correct named seat. New live matching ignores corrections to older words and requires several words with a consistent speaker ID. Own-voice and unidentified-speaker mention alerts are suppressed; match your own voice before alerts become active. The underlying diarization model can still misattribute speech.

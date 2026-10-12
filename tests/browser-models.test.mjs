@@ -60,11 +60,12 @@ test('truncated streams and cancellation during a download leave no cached parti
 test('each model profile pins downloads and covers every large file with integrity blocks',async()=>{
   const {modelProfiles}=await import('../src/browser/model-import.js');
   const cpu=(await import('../config/cpu-model-chunks.json',{with:{type:'json'}})).default;
+  const moonshine=(await import('../config/moonshine-model-chunks.json',{with:{type:'json'}})).default;
   const standard=(await import('../config/browser-model-chunks.json',{with:{type:'json'}})).default;
   for(const profile of Object.values(modelProfiles))for(const entry of profile.entries){
     assert.match(entry.url,/\/resolve\/[0-9a-f]{40}\//);
     if(entry.size>standard.blockSize){
-      const plan=cpu.files[entry.path]||standard.files[entry.path];
+      const plan=moonshine.files[entry.path]||cpu.files[entry.path]||standard.files[entry.path];
       assert.equal(plan.sha256,entry.lfs.sha256);
       assert.equal(plan.hashes.length,Math.ceil(entry.size/standard.blockSize));
     }

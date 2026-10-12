@@ -21,6 +21,10 @@ export class CaptionUpdates {
   }
   update(words) {
     let previous = this.previousSpeaker, changed = Infinity;
+    // A streaming seq2seq hypothesis may replace or remove several final words.
+    if (this.segments.length > words.length) {
+      changed = words.length; this.segments.length = words.length;
+    }
     for (let i = this.finalized; i < words.length; i++) {
       const word = words[i], frame = Math.round(word.time * 100), scores = new Float32Array(8);
       let count = 0;
@@ -44,7 +48,7 @@ export class CaptionUpdates {
       }
       // Finalize a contiguous prefix only. Speaker probabilities already emitted
       // by the streaming model are immutable, so this keeps the same decisions.
-      if (i === this.finalized && i < words.length - 1 && (frame + 8 < this.frameEnd || this.speakerDetectionEnded)) {
+      if (i === this.finalized && (i < words.length - 1 || word.stable === true) && word.stable !== false && (frame + 8 < this.frameEnd || this.speakerDetectionEnded)) {
         this.finalized = i + 1;
         this.previousSpeaker = previous;
       }
@@ -52,8 +56,14 @@ export class CaptionUpdates {
     // Drop speaker history that no future word will consult (never store audio).
     const pendingWord = words[this.finalized];
     if (pendingWord) {
-      const keepFrom = Math.max(0, Math.round(pendingWord.time * 100) - 8);
+      const keepFrom = Math.max(0, Math.round((pendingWord.retainFrom ?? pendingWord.time) * 100) - 8);
       const remove = Math.min(this.activity.length, Math.max(0, keepFrom - this.activityBase));
+      if (remove) { this.activity = this.activity.slice(remove); this.activityBase += remove; }
+    }
+    // Between completed Moonshine phrases (or during silence), retain only
+    // recent probabilities for the next speech onset, not an unbounded history.
+    if (!pendingWord) {
+      const remove = Math.max(0, this.activity.length - 1600);
       if (remove) { this.activity = this.activity.slice(remove); this.activityBase += remove; }
     }
     return Number.isFinite(changed) ? { from: changed, segments: this.segments.slice(changed) } : null;

@@ -77,7 +77,7 @@ export class InferenceClient {
     if (this.closed) return;
     if (data.type === 'load') {
       this.modelProfile = data.modelProfile || 'standard'; this.fixedShapes = this.modelProfile === 'int8-dynamic' && data.fixedShapes !== false;
-      this.pendingLoads = this.members.map(member => ({member, data: { ...data, modelFiles: data.modelFiles ? Object.fromEntries(Object.entries(data.modelFiles).filter(([path]) => member.role === 'both' || (member.role === 'asr' ? path.startsWith('asr/') || path.startsWith('asr-int8/') : path.startsWith('diar/')))) : undefined, role:member.role, threads:this.plan[member.role], jointMode:this.jointMode, device:this.device }}));
+      this.pendingLoads = this.members.map(member => ({member, data: { ...data, modelFiles: data.modelFiles ? Object.fromEntries(Object.entries(data.modelFiles).filter(([path]) => member.role === 'both' || (member.role === 'asr' ? path.startsWith('asr/') || path.startsWith('asr-int8/') || path.startsWith('moonshine-tiny/') || path.startsWith('moonshine-small/') : path.startsWith('diar/')))) : undefined, role:member.role, threads:this.plan[member.role], jointMode:this.jointMode, device:this.device }}));
       const first = this.pendingLoads.shift();
       first.member.worker.postMessage(first.data);
       return;

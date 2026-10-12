@@ -16,5 +16,15 @@
       "src/audio.ts"
     ],
     "changes": "Local-model browser integration with CPU and WebGPU execution, pinned INT8-dynamic fused decoder support, fixed input dimensions, approximate token times, and per-stage timing counters"
+  },
+  "moonshine_onnx": {
+    "repositories": [
+      "https://huggingface.co/Masterx/moonshine-streaming-tiny-ONNX",
+      "https://huggingface.co/Masterx/moonshine-streaming-small-ONNX"
+    ],
+    "revisions_manifest": "config/moonshine-models.json",
+    "base_models": "moonshine-ai/moonshine-streaming-tiny and moonshine-ai/moonshine-streaming-small",
+    "license": "MIT; src/browser/MOONSHINE-LICENSE",
+    "integration": "Independent JavaScript five-graph streaming adapter using the existing ONNX Runtime Web; estimated word times; bounded active phrase; no Moonshine WASM dependency"
   }
 }

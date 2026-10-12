@@ -3,7 +3,7 @@ import { ArrowDown, Captions, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { conversationTurns } from '@/lib/caption-flow';
 
-export function Conversation({ session, live, holding, heldSession, textSize, announce, onReturn, onEdit, onRename }) {
+export function Conversation({ session, live, holding, heldSession, textSize, announce, onReturn, onEdit, onRename, speakerStyles }) {
   const view = holding ? heldSession : session;
   const prior = useRef([]);
   const turns = useMemo(() => { prior.current = conversationTurns(view, prior.current); return prior.current; }, [view]);
@@ -56,7 +56,7 @@ export function Conversation({ session, live, holding, heldSession, textSize, an
       {!turns.length ? <div className="caption-empty"><span className="empty-caption-icon" aria-hidden="true"><Captions size={36}/></span><h2>{live ? 'Listening. Your words will appear here.' : 'A clear place for the conversation.'}</h2><p>{live ? 'Speak naturally. Speaker labels will appear as voices are recognised.' : 'Choose your microphone, then start captions. Words appear here and improve in place.'}</p><div className="reading-example" aria-hidden="true"><span className="example-line"/><span className="example-line short"/></div></div> : <p className="caption-flow segment-text">
         {turns.map((turn, index) => {
           const name = view.speakers?.[turn.speaker] || (turn.speaker ? `Speaker ${turn.speaker}` : 'Speaker ?');
-          return <span key={turn.id} data-turn={turn.id} className={`inline-turn voice-${Number(turn.speaker || 0) % 5}`}>
+          return <span key={turn.id} data-turn={turn.id} style={speakerStyles?.[turn.speaker]} className={`inline-turn voice-${Number(turn.speaker || 0) % 5}`}>
             {index > 0 && ' '}<SpeakerLabel id={turn.speaker} name={name} onRename={onRename}/>{' '}
             {turn.pieces.map((piece, pieceIndex) => <span key={pieceIndex} className={piece.draft ? 'caption-draft' : undefined}>{pieceIndex > 0 && !/^[,.;:!?]/.test(piece.text) ? ' ' : ''}{piece.text.replace(/\s+/gu, ' ')}</span>)}
           </span>;

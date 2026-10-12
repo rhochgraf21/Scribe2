@@ -1,0 +1,146 @@
+[
+  {
+    "id": "Masterx/moonshine-streaming-tiny-ONNX",
+    "sha": "e63ede138516bea634dab385e82b645a8f4f614f",
+    "directory": "moonshine-tiny",
+    "files": [
+      {
+        "rfilename": "LICENSE",
+        "size": 1108,
+        "blobId": "21400587fe85248c0b100b33b4aa7ab8c0337890"
+      },
+      {
+        "rfilename": "adapter_int8.onnx",
+        "size": 5249620,
+        "blobId": "d5f1b6275ca951f1b12dfd56e498df7d0d162938",
+        "lfs": {
+          "sha256": "3a16bdb9a09a36be0fb5dc05716ee1323e4b8257fc08b44956c603500e0b7c41",
+          "size": 5249620
+        }
+      },
+      {
+        "rfilename": "cross_kv_int8.onnx",
+        "size": 1283179,
+        "blobId": "60e027f0683dbdaa7d12681714c43a886f032de0",
+        "lfs": {
+          "sha256": "e913e383476d4719fa20a159fa8590af8d34f94e6ab5b67a5b22e156b5595aef",
+          "size": 1283179
+        }
+      },
+      {
+        "rfilename": "decoder_kv_int8.onnx",
+        "size": 53630749,
+        "blobId": "ba673cc495ee499de4ebdf97898f19560db8b8fd",
+        "lfs": {
+          "sha256": "05225f56756a20d2c8d507d2d3c37f84ef3dc071322d649e1be2e6668480c80d",
+          "size": 53630749
+        }
+      },
+      {
+        "rfilename": "encoder_int8.onnx",
+        "size": 7937712,
+        "blobId": "9324e2f94f7c1a4477b5d66408b88597831c0959",
+        "lfs": {
+          "sha256": "f61adb723e8c10c1a6ee8ca7516197b24f343f87ee6dd21ec257892f4eb0b53c",
+          "size": 7937712
+        }
+      },
+      {
+        "rfilename": "frontend.onnx",
+        "size": 8307058,
+        "blobId": "47c184b8ad1a51ff710474c955ba1f61e482d894",
+        "lfs": {
+          "sha256": "fcc146fd2d991fd4123b408c5c7416ec866b7f9ad9edca5153d11eea18e879f3",
+          "size": 8307058
+        }
+      },
+      {
+        "rfilename": "streaming_config.json",
+        "size": 841,
+        "blobId": "d2871f133d1cf5b2fe1a817e7d189b45d34b3280"
+      },
+      {
+        "rfilename": "tokenizer.json",
+        "size": 1676069,
+        "blobId": "95d18d455dcc0c3049f0f631ea5cfa2bed862222"
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "size": 172,
+        "blobId": "c90657af99ab53abcb86a31d1f54645cabe2795f"
+      }
+    ]
+  },
+  {
+    "id": "Masterx/moonshine-streaming-small-ONNX",
+    "sha": "dafc41f7b33daa11c0b19866e90eb493e98650c1",
+    "directory": "moonshine-small",
+    "files": [
+      {
+        "rfilename": "LICENSE",
+        "size": 1108,
+        "blobId": "21400587fe85248c0b100b33b4aa7ab8c0337890"
+      },
+      {
+        "rfilename": "adapter_int8.onnx",
+        "size": 10485642,
+        "blobId": "4fece747eb4e30afa95b71c409d2f7fc0fb6c730",
+        "lfs": {
+          "sha256": "c9e4a19fa3691ad4b186914c4c6dd6262421ad0d828b76559ddf021abed3c601",
+          "size": 10485642
+        }
+      },
+      {
+        "rfilename": "cross_kv_int8.onnx",
+        "size": 5352766,
+        "blobId": "75540507b6543c895039d40164da5cf4c3e53dfc",
+        "lfs": {
+          "sha256": "fefeaf66e51c9d4873e8783498dd2da653ccafad1861f85818f57b2f7ae07c0b",
+          "size": 5352766
+        }
+      },
+      {
+        "rfilename": "decoder_kv_int8.onnx",
+        "size": 115557953,
+        "blobId": "78ca0520ffde28112cc144b13e45fb16d5667b98",
+        "lfs": {
+          "sha256": "69aea70bf98141df19c0aa6e1c767dfd4af98a061ee8e8617d6e11c51b59a3e5",
+          "size": 115557953
+        }
+      },
+      {
+        "rfilename": "encoder_int8.onnx",
+        "size": 44581925,
+        "blobId": "9332f6a64d4b7b54871034de1a0acfd196779aa1",
+        "lfs": {
+          "sha256": "6e6d4fb82b0a451dcf8eab34c7d5f5380ac74f8eabacce00c99585f3dc6a750b",
+          "size": 44581925
+        }
+      },
+      {
+        "rfilename": "frontend.onnx",
+        "size": 30966660,
+        "blobId": "01eba1ea2f45b0553ab9b17a9a9efe274f546da5",
+        "lfs": {
+          "sha256": "51647f2bc7c2898238f6c9ac1f024b6e5d872d0e869a7945501612de7caec05a",
+          "size": 30966660
+        }
+      },
+      {
+        "rfilename": "streaming_config.json",
+        "size": 985,
+        "blobId": "8c2f3f1a7d4bb261040d383f7df08579e7d9baf3"
+      },
+      {
+        "rfilename": "tokenizer.json",
+        "size": 1676069,
+        "blobId": "95d18d455dcc0c3049f0f631ea5cfa2bed862222"
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "size": 172,
+        "blobId": "c90657af99ab53abcb86a31d1f54645cabe2795f"
+      }
+    ]
+  }
+]

@@ -9,8 +9,10 @@ const alias = [
   { find: 'sharp', replacement: local('./src/browser/empty-node.js') },
 ];
 export default defineConfig({
-  base: './', plugins: [react(), tailwindcss()], publicDir: false,
+  base: './', plugins: [react(), tailwindcss()], publicDir: 'public',
   resolve: { alias, conditions: ['onnxruntime-web-use-extern-wasm', 'browser'] },
   worker: { format: 'es' },
+  server: { headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' } },
+  preview: { headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' } },
   build: { outDir: 'browser-dist', emptyOutDir: true, rollupOptions: { input: process.env.SCRIBE_BROWSER_BENCHMARK === '1' ? [local('./browser.html'), local('./browser-benchmark.html')] : local('./browser.html') } },
 });

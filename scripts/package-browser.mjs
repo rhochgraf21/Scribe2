@@ -8,7 +8,7 @@ await mkdir(`${root}/ort`, { recursive:true });
 for (const name of await readdir(runtime)) {
   if (/^ort-wasm-simd-threaded(?:\.(?:jsep|asyncify|jspi))?\.(wasm|mjs)$/.test(name)) await cp(`${runtime}/${name}`, `${root}/ort/${name}`);
 }
-for (const name of ['pcm-worklet.js','audio.js']) await cp(`public/${name}`, `${root}/${name}`);
+for (const name of ['pcm-worklet.js','audio.js','isolation-worker.js']) await cp(`public/${name}`, `${root}/${name}`);
 await mkdir(`${root}/licenses`, { recursive:true });
 await cp('src/browser/ASR-LICENSE', `${root}/licenses/asr-reference.txt`);
 await cp('vendor/transformers/LICENSE', `${root}/licenses/transformers.txt`);
@@ -18,3 +18,6 @@ await cp('config/browser-models.json', `${root}/licenses/model-manifest.json`);
 await writeFile(`${root}/index.html`, await readFile(`${root}/browser.html`));
 await writeFile(`${root}/.nojekyll`, '');
 console.log('Browser-only site built. No models, audio, or backend included.');
+
+await cp('config/moonshine-models.json', `${root}/licenses/moonshine-model-manifest.json`);
+await cp('src/browser/MOONSHINE-LICENSE', `${root}/licenses/moonshine.txt`);
