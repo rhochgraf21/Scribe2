@@ -1,4 +1,4 @@
-import { SilenceGate } from './silence-gate.js';
+import { loadSilero } from './silero-vad.js';
 import { DIAGNOSTIC_INTERVAL_MS } from './diagnostic-recorder.js';
 import { installGpuDiagnostics } from './gpu-diagnostics.js';
 import { wasmMemorySnapshot } from './memory-probe.js';
@@ -34,6 +34,7 @@ globalThis.fetch = (input, options) => {
     const file = modelFiles[decodeURIComponent(url.pathname.slice('/models/'.length))];
     return Promise.resolve(file ? new Response(method === 'HEAD' ? null : file, { headers: { 'Content-Length': String(file.size) } }) : new Response(null, { status:404 }));
   }
+  if (assetBase && url.href === new URL('vad/silero-v6-16k.onnx',assetBase).href) return localFetch(input, { ...options, redirect:'error' });
   if (!assetBase || !url.href.startsWith(new URL('ort/', assetBase).href)) throw Error('Unexpected asset request');
   if (url.pathname.endsWith('.wasm') && runtimeIdentity) {
     runtimeIdentity.requestedWasm = url.pathname.split('/').pop();
@@ -51,7 +52,7 @@ env.useFSCache = false;
 // blob URL, which our Content Security Policy does not allow importing.
 env.useWasmCache = false;
 let observeGPU;
-const silenceGate = new SilenceGate();
+let vad;
 let silenceSkipping = true;
 let lastMemoryCheckpoint = -Infinity;
 let memoryStage = 'worker-start';
@@ -60,7 +61,7 @@ let role = 'both', lastWords = [], threads = 1;
 let speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0, speakerSkippedChunks: 0, speakerSkippedSeconds: 0 };
 let compareSpeakerOutputs = false;
 let loadMs = 0, speakerProfiling = false, operatorProfile, restoreProfileConsole, speakerRuntimeOptions;
-const metrics = () => ({ ...asr?.metrics, ...speakerMetrics });
+const metrics = () => ({ ...asr?.metrics, ...speakerMetrics, ...(vad ? {vadMs:vad.computeMs,vadFrames:vad.frames,vadProbability:vad.probability,vadFrameMs:32} : {}) });
 let updates = new CaptionUpdates(), totalSamples = 0, elapsedMs = 0, active = false;
 const send = (type, value = {}) => postMessage({ type, ...value });
 const status = message => { send('status', { message }); memoryCheckpoint(true); };
@@ -75,7 +76,7 @@ function memoryCheckpoint(force = false) {
 }
 setInterval(memoryCheckpoint, DIAGNOSTIC_INTERVAL_MS);
 function reset() {
-  silenceGate.reset();
+  vad?.reset();
   speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0, speakerSkippedChunks: 0, speakerSkippedSeconds: 0 };
   if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; speakerMetrics.speakerOutputsFinite = true; }
   cache = null; pcm = new Float32Array(); base = cursor = totalSamples = elapsedMs = 0;
@@ -92,7 +93,7 @@ async function diarize(flush) {
     const last = flush && available < count;
     const samples = pcm.slice(start - base, start - base + (last ? available : count));
     const stepFrames = processor.num_mel_frames_per_step;
-    const skip = silenceGate.shouldSkip(samples, stepFrames / 100, silenceSkipping && !first && !last);
+    const skip = silenceSkipping && vad && !first && !last && vad.canSkip(cursor * 160, (cursor + stepFrames) * 160);
     if (skip) {
       // Advance the original audio timeline, without updating/clearing identity
       // embeddings. Keep overlapping PCM/lookahead for the next speech onset.
@@ -118,6 +119,7 @@ async function diarize(flush) {
     const next = processor.audio_chunk_start(cursor);
     const remove = Math.max(0, Math.min(pcm.length, next - base));
     pcm = pcm.slice(remove); base += remove;
+    vad?.discardBefore(cursor * 160);
     if (last) break;
   }
 }
@@ -229,6 +231,17 @@ self.onmessage = ({ data }) => {
         model.config.streaming_config = { ...model.config.streaming_config,
           fifo_length: historyFrames, speaker_cache_update_period: historyFrames === 13 ? chunkFrames : historyFrames - 42 };
       }
+      if (role !== 'asr' && silenceSkipping) {
+        status('Loading speech activity detector (Silero v6)');
+        try {
+          const response = await fetch(new URL('vad/silero-v6-16k.onnx',assetBase));
+          if (!response.ok) throw Error('VAD model unavailable');
+          const bytes = await response.arrayBuffer();
+          const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+          if (hash !== '794ed8a51d4f37faf0555383aa34dbaeeb83e3031a1df1e0351c457e1142bd3e') throw Error('VAD model integrity check failed');
+          vad = await loadSilero(ort,bytes);
+        } catch { silenceSkipping = false; send('warning',{message:'Speech activity detection unavailable; processing all audio.'}); }
+      }
       if (usesGPU && ort.env.webgpu.device) observeGPU(ort.env.webgpu.device);
       memoryStage = 'ready'; memoryCheckpoint(true);
       loadMs = performance.now() - loadStarted;
@@ -238,6 +251,15 @@ self.onmessage = ({ data }) => {
       const started = performance.now();
       const samples = new Float32Array(data.samples);
       totalSamples += samples.length;
+      if (vad && silenceSkipping) {
+        try { await vad.push(samples); }
+        catch {
+          silenceSkipping = false;
+          try { await vad.release(); } catch {}
+          vad = null;
+          send('warning',{message:'Speech activity detection stopped; processing all audio.'});
+        }
+      }
       if (role !== 'asr') {
         const joined = new Float32Array(pcm.length + samples.length); joined.set(pcm); joined.set(samples, pcm.length); pcm = joined;
       }

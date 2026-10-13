@@ -53,6 +53,7 @@ window.runDiarization = async ({ dtype, device = 'wasm', pcmBase64, hybrid = fal
   }
   worker.postMessage({type:'stop'}); await finished; check();
   if (hybrid) { report.frames = report.metrics.speakerOutputValues / 8; report.finite = report.metrics.speakerOutputsFinite; }
+  if (speakerSilenceSkipping && !(report.metrics.vadFrames > 0)) throw Error('Silero did not run');
   if (injectSilence && speakerSilenceSkipping && !(report.metrics.speakerSkippedSeconds > 5)) throw Error('Silence was not skipped');
   if (Math.abs(report.frames - report.seconds*100) > 2) throw Error('Speaker timeline drifted');
   if (report.historyFrames !== 125) throw Error('Expected 10-second speaker history');

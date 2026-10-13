@@ -19,7 +19,7 @@ await cp('config/cpu-model.json', `${root}/licenses/cpu-model-manifest.json`);
 await cp('config/browser-models.json', `${root}/licenses/model-manifest.json`);
 await writeFile(`${root}/index.html`, await readFile(`${root}/browser.html`));
 await writeFile(`${root}/.nojekyll`, '');
-console.log('Browser-only site built. No models, audio, or backend included.');
+console.log('Browser-only site built with small Silero VAD. Speech/speaker models remain separate; no audio or backend included.');
 
 await cp('config/moonshine-models.json', `${root}/licenses/moonshine-model-manifest.json`);
 await cp('src/browser/MOONSHINE-LICENSE', `${root}/licenses/moonshine.txt`);
