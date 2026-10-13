@@ -148,7 +148,7 @@ export default function BrowserApp() {
   recordingState.current = { phase, segmentCount:session.segments.length, transcriptCharacters:session.segments.reduce((n,s) => n + (s.text?.length || 0), 0), pendingSeconds:pending.current / 16000 };
   function checkpoint(event) { recorder.record(event, worker.current?.diagnostics(), recordingState.current); }
   useEffect(() => {
-    const timer = setInterval(() => { if (['loading','starting','listening','stopping'].includes(recordingState.current.phase)) checkpoint('sample'); }, 250);
+    const timer = setInterval(() => { if (['loading','starting','listening','stopping'].includes(recordingState.current.phase)) checkpoint('sample'); }, 25);
     const visibility = () => checkpoint(document.hidden ? 'hidden' : 'visible');
     document.addEventListener('visibilitychange', visibility);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visibility); };

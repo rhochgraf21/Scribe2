@@ -1,7 +1,7 @@
 export const LOG_KEY = 'scribe-diagnostic-current-v1';
 export const PREVIOUS_KEY = 'scribe-diagnostic-previous-v1';
 const MAX_POINTS = 960;
-const MAX_BYTES = 256 * 1024;
+const MAX_BYTES = 4 * 1024 * 1024; // Reject unexpectedly large stored reports on read.
 // Explicit whitelist: never persist arbitrary events, captions, names or errors.
 const numeric = object => Object.fromEntries(Object.entries(object || {}).filter(([,v]) => typeof v === 'number' && Number.isFinite(v)));
 export class DiagnosticRecorder {
@@ -25,7 +25,7 @@ export class DiagnosticRecorder {
       modelProfile:config.modelProfile, speakerDtype:config.speakerDtype,
       speakerDetection:config.speakerDetection, device:config.device, mode:config.mode,
       threadBudget:config.threadBudget,
-    }, points:[], limitations:'WASM allocation is not resident RAM. GPU and total Safari memory are unavailable. Interrupted does not prove jetsam.' };
+    }, sampleIntervalMs:25, maxPoints:MAX_POINTS, points:[], limitations:'WASM allocation is not resident RAM. GPU and total Safari memory are unavailable. Interrupted does not prove jetsam.' };
     this.record('load');
   }
   record(event, snapshot = {}, counts = {}) {
@@ -39,12 +39,9 @@ export class DiagnosticRecorder {
         speechDevice:w.speechDevice, speakerDevice:w.speakerDevice,
         memory:{ ...numeric(w.memory), stage:w.memory?.stage }, metrics:numeric(w.metrics) })) };
     this.current.points.push(point);
-    // Keep the first checkpoint plus a rolling tail.
-    while (this.current.points.length > MAX_POINTS) this.current.points.splice(1,1);
-    let json = JSON.stringify(this.current);
-    while (json.length > MAX_BYTES && this.current.points.length > 2) {
-      this.current.points.splice(1,1); json = JSON.stringify(this.current);
-    }
+    // Retain exactly the latest entries; run metadata survives outside the ring.
+    if (this.current.points.length > MAX_POINTS) this.current.points.splice(0, this.current.points.length - MAX_POINTS);
+    const json = JSON.stringify(this.current);
     try { this.storage.setItem(LOG_KEY, json); this.available = true; }
     catch { this.available = false; }
   }

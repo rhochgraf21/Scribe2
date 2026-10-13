@@ -55,7 +55,7 @@ function memoryCheckpoint() {
     cacheFrames:cache?.num_cache_frames || 0, fifoFrames:cache?.num_fifo_frames || 0,
     wordCount:asr?.words?.length || 0, speakerCalls:speakerMetrics.speakerCalls } });
 }
-setInterval(memoryCheckpoint, 250);
+setInterval(memoryCheckpoint, 25);
 function reset() {
   speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
   if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; speakerMetrics.speakerOutputsFinite = true; }
