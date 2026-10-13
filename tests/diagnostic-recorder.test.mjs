@@ -18,11 +18,11 @@ test('checkpoints survive abrupt termination and preserve previous run through n
 test('bounded logs retain initial checkpoint and exclude text, names, and arbitrary payloads',()=>{
  const store=storage(); const recorder=new DiagnosticRecorder(store);
  recorder.begin({device:'wasm',name:'PRIVATE'});
- for(let i=0;i<500;i++) recorder.record('sample',{capturedSeconds:i,words:['PRIVATE'],workers:[{role:'both',words:['PRIVATE'],metrics:{speakerMs:i,text:'PRIVATE'},memory:{wasmBytes:10}}]}, {segmentCount:i,text:'PRIVATE'});
+ for(let i=0;i<1100;i++) recorder.record('sample',{capturedSeconds:i,words:['PRIVATE'],workers:[{role:'both',words:['PRIVATE'],metrics:{speakerMs:i,text:'PRIVATE'},memory:{wasmBytes:10}}]}, {segmentCount:i,text:'PRIVATE'});
  const saved=store.getItem(LOG_KEY);
  assert.ok(saved.length<=256*1024); assert.ok(!saved.includes('PRIVATE'));
- assert.equal(recorder.current.points.length,120); assert.equal(recorder.current.points[0].event,'load');
- assert.equal(recorder.current.points.at(-1).capturedSeconds,499);
+ assert.ok(recorder.current.points.length <= 960); assert.equal(recorder.current.points[0].event,'load');
+ assert.equal(recorder.current.points.at(-1).capturedSeconds,1099);
 });
 test('corrupt or blocked storage never prevents inference; current log remains exportable',()=>{
  const store=storage(); store.setItem(LOG_KEY,'{broken');

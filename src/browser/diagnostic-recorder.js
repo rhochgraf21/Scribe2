@@ -1,6 +1,6 @@
 export const LOG_KEY = 'scribe-diagnostic-current-v1';
 export const PREVIOUS_KEY = 'scribe-diagnostic-previous-v1';
-const MAX_POINTS = 120;
+const MAX_POINTS = 960;
 const MAX_BYTES = 256 * 1024;
 // Explicit whitelist: never persist arbitrary events, captions, names or errors.
 const numeric = object => Object.fromEntries(Object.entries(object || {}).filter(([,v]) => typeof v === 'number' && Number.isFinite(v)));

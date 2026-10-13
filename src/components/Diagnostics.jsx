@@ -25,7 +25,7 @@ export function Diagnostics({ recorder, snapshot, modelProfile, device, threadBu
   }
   return <details className="tool-section diagnostics"><summary>Performance diagnostics</summary>
     {recorder && <div className="diagnostic-recorder">
-      <p>On-device checkpoints save every 2 seconds while this page is open. The log keeps the start and roughly the last 4 minutes, without audio, names, or caption text. WASM allocation is not total Safari RAM; GPU memory is unavailable.</p>
+      <p>On-device checkpoints save every 250 ms during loading and captioning. The log keeps the start and a rolling history, capped at 960 checkpoints or 256 KiB per run, without audio, names, or caption text. WASM allocation is not total Safari RAM; GPU memory is unavailable.</p>
       {recorder.previous && <p>Previous run: {new Date(recorder.previous.startedAt).toLocaleString()} · {['running','loading'].includes(recorder.previous.state) ? 'Interrupted or closed without a final checkpoint; this does not prove jetsam.' : recorder.previous.state}</p>}
       {!recorder.available && <p role="status">Browser storage is unavailable or full. Checkpoints may not survive a reload; download this run now.</p>}
       <Button variant="outline" disabled={!recorder.previous} onClick={() => downloadLog(true)}>Download previous diagnostic run</Button>{' '}

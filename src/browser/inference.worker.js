@@ -55,7 +55,7 @@ function memoryCheckpoint() {
     cacheFrames:cache?.num_cache_frames || 0, fifoFrames:cache?.num_fifo_frames || 0,
     wordCount:asr?.words?.length || 0, speakerCalls:speakerMetrics.speakerCalls } });
 }
-setInterval(memoryCheckpoint, 2000);
+setInterval(memoryCheckpoint, 250);
 function reset() {
   speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
   if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; speakerMetrics.speakerOutputsFinite = true; }
@@ -75,10 +75,12 @@ async function diarize(flush) {
     const featureStarted = performance.now();
     const inputs = await processor(samples, { is_streaming: true, is_first_audio_chunk: first, is_last_audio_chunk: last });
     speakerMetrics.speakerFeaturesMs += performance.now() - featureStarted;
+    memoryStage = 'speaker-inference-start'; memoryCheckpoint();
     const speakerStarted = performance.now();
     const outputs = await model({ ...inputs, speaker_cache: cache, on_profile: timing => {
       for (const [key, value] of Object.entries(timing)) speakerMetrics[key] += value;
     } });
+    memoryStage = 'speaker-inference-end'; memoryCheckpoint();
     speakerMetrics.speakerMs += performance.now() - speakerStarted; speakerMetrics.speakerCalls++;
     if (compareSpeakerOutputs) {
       const values = outputs.logits.data;
@@ -114,6 +116,12 @@ function captions() {
   const patch = updates.update(asr.words);
   if (patch) send('captions', patch);
 }
+const measuredASR = { async pushAudio(...args) {
+  memoryStage = 'speech-batch-start'; memoryCheckpoint();
+  const result = await asr.pushAudio(...args);
+  memoryStage = 'speech-batch-end'; memoryCheckpoint();
+  return result;
+} };
 let chain = Promise.resolve();
 self.onmessage = ({ data }) => {
   chain = chain.then(async () => {
@@ -195,15 +203,15 @@ self.onmessage = ({ data }) => {
         const joined = new Float32Array(pcm.length + samples.length); joined.set(pcm); joined.set(samples, pcm.length); pcm = joined;
       }
       // ASR and diarization advance continuously, without waiting for silence.
-      if (role === 'both') await processCaptionBatch(asr, samples, false, captions, diarize);
-      else if (role === 'asr') { await asr.pushAudio(samples, false, captions); captions(); }
+      if (role === 'both') await processCaptionBatch(measuredASR, samples, false, captions, diarize);
+      else if (role === 'asr') { await measuredASR.pushAudio(samples, false, captions); captions(); }
       else await diarize(false);
       elapsedMs += performance.now() - started;
       send('ack', { samples: samples.length, audioSeconds: totalSamples / 16000, elapsedMs, metrics: metrics() });
     } else if (data.type === 'stop' && active) {
       const started = performance.now();
-      if (role === 'both') await processCaptionBatch(asr, new Float32Array(), true, captions, diarize);
-      else if (role === 'asr') { await asr.pushAudio(new Float32Array(), true, captions); captions(); }
+      if (role === 'both') await processCaptionBatch(measuredASR, new Float32Array(), true, captions, diarize);
+      else if (role === 'asr') { await measuredASR.pushAudio(new Float32Array(), true, captions); captions(); }
       else await diarize(true);
       elapsedMs += performance.now() - started;
       if (speakerProfiling && model) {
