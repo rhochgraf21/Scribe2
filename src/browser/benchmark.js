@@ -3,7 +3,7 @@
 import { modelProfiles, downloadModels } from './model-import';
 import { InferenceClient } from './inference-client';
 import { applyCaptionPatch } from './caption-updates';
-window.runCpuBenchmark = async ({ mode, jointMode, device = 'wasm', modelProfile = 'standard', threadBudget = 4, fixedShapes = false, speakerChunkFrames = 11, speakerHistoryFrames = 200, speakerFixedBatch = false, speakerRuntimeOptions = {}, speakerAccuracyLevel = 0, speakerGraphBase64, speakerGraphSha256, realtime = false, pcmBase64 }) => {
+window.runCpuBenchmark = async ({ mode, jointMode, device = 'wasm', modelProfile = 'standard', threadBudget = 4, fixedShapes = false, speakerChunkFrames = 11, speakerHistoryFrames = 200, speakerFixedBatch = false, speakerSilenceSkipping = true, speakerRuntimeOptions = {}, speakerAccuracyLevel = 0, speakerGraphBase64, speakerGraphSha256, realtime = false, pcmBase64 }) => {
   const bytes = Uint8Array.from(atob(pcmBase64),c=>c.charCodeAt(0));
   const pcm = new Int16Array(bytes.buffer);
   const client = new InferenceClient({mode,jointMode,device,threadBudget});
@@ -37,7 +37,7 @@ window.runCpuBenchmark = async ({ mode, jointMode, device = 'wasm', modelProfile
       if (digest !== speakerGraphSha256) throw Error('Experimental speaker graph checksum mismatch');
       modelFiles['diar/onnx/model_quantized.onnx'] = new Blob([graph]);
     } else if (speakerAccuracyLevel !== 0 || speakerGraphBase64) throw Error('Invalid speaker graph experiment');
-    client.postMessage({type:'load',speakerCompareOutputs:true,fixedShapes,speakerChunkFrames,speakerHistoryFrames,speakerFixedBatch,speakerRuntimeOptions,modelProfile,modelFiles,assetBase:new URL('.',document.baseURI).href});
+    client.postMessage({type:'load',speakerCompareOutputs:true,speakerSilenceSkipping,fixedShapes,speakerChunkFrames,speakerHistoryFrames,speakerFixedBatch,speakerRuntimeOptions,modelProfile,modelFiles,assetBase:new URL('.',document.baseURI).href});
     // Attach rejection handler immediately, including model-load failures.
     await Promise.race([loaded,stopped]);
     start=performance.now(); progress.state='running';client.postMessage({type:'start'});

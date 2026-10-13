@@ -1,3 +1,5 @@
+import { SilenceGate } from './silence-gate.js';
+import { DIAGNOSTIC_INTERVAL_MS } from './diagnostic-recorder.js';
 import { installGpuDiagnostics } from './gpu-diagnostics.js';
 import { wasmMemorySnapshot } from './memory-probe.js';
 import { createOperatorProfile } from './operator-profile.js';
@@ -49,25 +51,32 @@ env.useFSCache = false;
 // blob URL, which our Content Security Policy does not allow importing.
 env.useWasmCache = false;
 let observeGPU;
+const silenceGate = new SilenceGate();
+let silenceSkipping = true;
+let lastMemoryCheckpoint = -Infinity;
 let memoryStage = 'worker-start';
 let asr, model, processor, cache = null, pcm = new Float32Array(), base = 0, cursor = 0;
 let role = 'both', lastWords = [], threads = 1;
-let speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
+let speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0, speakerSkippedChunks: 0, speakerSkippedSeconds: 0 };
 let compareSpeakerOutputs = false;
 let loadMs = 0, speakerProfiling = false, operatorProfile, restoreProfileConsole, speakerRuntimeOptions;
 const metrics = () => ({ ...asr?.metrics, ...speakerMetrics });
 let updates = new CaptionUpdates(), totalSamples = 0, elapsedMs = 0, active = false;
 const send = (type, value = {}) => postMessage({ type, ...value });
-const status = message => { send('status', { message }); memoryCheckpoint(); };
-function memoryCheckpoint() {
+const status = message => { send('status', { message }); memoryCheckpoint(true); };
+function memoryCheckpoint(force = false) {
+  const now = performance.now();
+  if (!force && now - lastMemoryCheckpoint < DIAGNOSTIC_INTERVAL_MS) return;
+  lastMemoryCheckpoint = now;
   send('memory', { memory: { stage:memoryStage, ...wasmMemorySnapshot(), measuredAt:Date.now(), pcmBytes:pcm.byteLength,
     cacheBytes:(cache?.embeds?.byteLength || 0) + (cache?.probs?.byteLength || 0) + (cache?.fifo?.byteLength || 0),
     cacheFrames:cache?.num_cache_frames || 0, fifoFrames:cache?.num_fifo_frames || 0,
     wordCount:asr?.words?.length || 0, speakerCalls:speakerMetrics.speakerCalls } });
 }
-setInterval(memoryCheckpoint, 25);
+setInterval(memoryCheckpoint, DIAGNOSTIC_INTERVAL_MS);
 function reset() {
-  speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
+  silenceGate.reset();
+  speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0, speakerSkippedChunks: 0, speakerSkippedSeconds: 0 };
   if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; speakerMetrics.speakerOutputsFinite = true; }
   cache = null; pcm = new Float32Array(); base = cursor = totalSamples = elapsedMs = 0;
   updates = new CaptionUpdates(); asr?.startStream(101); lastWords = []; active = true;
@@ -82,36 +91,49 @@ async function diarize(flush) {
     if (available <= (first ? 0 : processor.feature_extractor.config.win_length)) break;
     const last = flush && available < count;
     const samples = pcm.slice(start - base, start - base + (last ? available : count));
-    const featureStarted = performance.now();
-    const inputs = await processor(samples, { is_streaming: true, is_first_audio_chunk: first, is_last_audio_chunk: last });
-    speakerMetrics.speakerFeaturesMs += performance.now() - featureStarted;
-    memoryStage = 'speaker-inference-start'; memoryCheckpoint();
-    const speakerStarted = performance.now();
-    const outputs = await model({ ...inputs, speaker_cache: cache, on_profile: timing => {
-      for (const [key, value] of Object.entries(timing)) speakerMetrics[key] += value;
-    } });
-    memoryStage = 'speaker-inference-end'; memoryCheckpoint();
-    speakerMetrics.speakerMs += performance.now() - speakerStarted; speakerMetrics.speakerCalls++;
-    if (compareSpeakerOutputs) {
-      const values = outputs.logits.data;
-      speakerMetrics.speakerOutputsFinite &&= values.every(Number.isFinite);
-      const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
-      let hash = speakerMetrics.speakerOutputHash;
-      for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
-      speakerMetrics.speakerOutputHash = hash; speakerMetrics.speakerOutputValues += values.length;
+    const stepFrames = processor.num_mel_frames_per_step;
+    const skip = silenceGate.shouldSkip(samples, stepFrames / 100, silenceSkipping && !first && !last);
+    if (skip) {
+      // Advance the original audio timeline, without updating/clearing identity
+      // embeddings. Keep overlapping PCM/lookahead for the next speech onset.
+      emitActivity(new Float32Array(stepFrames * 8).fill(-100), stepFrames);
+      speakerMetrics.speakerSkippedChunks++;
+      speakerMetrics.speakerSkippedSeconds += stepFrames / 100;
+    } else {
+      const featureStarted = performance.now();
+      const inputs = await processor(samples, { is_streaming: true, is_first_audio_chunk: first, is_last_audio_chunk: last });
+      speakerMetrics.speakerFeaturesMs += performance.now() - featureStarted;
+      memoryStage = 'speaker-inference-start'; memoryCheckpoint();
+      const speakerStarted = performance.now();
+      const outputs = await model({ ...inputs, speaker_cache: cache, on_profile: timing => {
+        for (const [key, value] of Object.entries(timing)) speakerMetrics[key] += value;
+      } });
+      memoryStage = 'speaker-inference-end'; memoryCheckpoint();
+      speakerMetrics.speakerMs += performance.now() - speakerStarted; speakerMetrics.speakerCalls++;
+      cache = outputs.speaker_cache;
+      emitActivity(outputs.logits.data, outputs.logits.dims[1]);
+      outputs.logits.dispose(); inputs.input_features.dispose(); inputs.attention_mask.dispose();
     }
-    cache = outputs.speaker_cache;
-    if (role === 'diar') {
-      const logits = Float32Array.from(outputs.logits.data);
-      postMessage({ type: 'activity', frames: outputs.logits.dims[1], logits: logits.buffer }, [logits.buffer]);
-    } else updates.addActivity(outputs.logits.data, outputs.logits.dims[1]);
-    outputs.logits.dispose(); inputs.input_features.dispose(); inputs.attention_mask.dispose();
     cursor += processor.num_mel_frames_per_step;
     const next = processor.audio_chunk_start(cursor);
     const remove = Math.max(0, Math.min(pcm.length, next - base));
     pcm = pcm.slice(remove); base += remove;
     if (last) break;
   }
+}
+function emitActivity(values, frames) {
+  if (compareSpeakerOutputs) {
+    speakerMetrics.speakerOutputsFinite &&= values.every(Number.isFinite);
+    const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
+    let hash = speakerMetrics.speakerOutputHash;
+    for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+    speakerMetrics.speakerOutputHash = hash; speakerMetrics.speakerOutputValues += values.length;
+  }
+
+  if (role === 'diar') {
+    const logits = Float32Array.from(values);
+    postMessage({ type: 'activity', frames, logits: logits.buffer }, [logits.buffer]);
+  } else updates.addActivity(values, frames);
 }
 function captions() {
   if (role === 'diar') return;
@@ -139,6 +161,7 @@ self.onmessage = ({ data }) => {
       const loadStarted = performance.now();
       modelFiles = data.modelFiles || {};
       compareSpeakerOutputs = data.speakerCompareOutputs === true;
+      silenceSkipping = data.speakerSilenceSkipping !== false;
       assetBase = data.assetBase;
       if (!assetBase || new URL(assetBase).origin !== self.location.origin) throw Error('Invalid asset origin');
       const device = data.device || 'wasm';
@@ -198,19 +221,19 @@ self.onmessage = ({ data }) => {
         processor.set_streaming_mode('buffered');
         model = await Nemotron3DiarizationForAudioFrameClassification.from_pretrained('diar', { device: speakerDevice, dtype: speakerDtype, local_files_only: true,
           session_options: { ...speakerRuntimeOptions, ...(data.speakerFixedBatch ? { freeDimensionOverrides: { batch_size: 1 } } : {}) } });
-        const historyFrames = data.speakerHistoryFrames ?? 188;
+        const historyFrames = data.speakerHistoryFrames ?? 125;
         if (![13, 125, 150, 188, 200, 264].includes(historyFrames)) throw Error('Invalid speaker history size');
-        // Default speaker history: 188 frames = 15.04 seconds.
+        // Default speaker history: 125 frames = 10 seconds.
         // Keep the short-window experiment available; otherwise use the existing
         // 42-frame overlap policy for normal windows. Identity cache unchanged.
         model.config.streaming_config = { ...model.config.streaming_config,
           fifo_length: historyFrames, speaker_cache_update_period: historyFrames === 13 ? chunkFrames : historyFrames - 42 };
       }
       if (usesGPU && ort.env.webgpu.device) observeGPU(ort.env.webgpu.device);
-      memoryStage = 'ready'; memoryCheckpoint();
+      memoryStage = 'ready'; memoryCheckpoint(true);
       loadMs = performance.now() - loadStarted;
       send('ready', { threads, role, device, speechDevice: role === 'diar' ? undefined : speechDevice, speakerDevice: role === 'asr' ? undefined : speakerDevice, loadMs, speakerRuntimeOptions, speakerChunkFrames: processor ? processor.num_mel_frames_per_step / processor.subsampling_factor : undefined, speakerLookaheadFrames: processor ? 4 : undefined, speakerHistoryFrames: model?.config.streaming_config.fifo_length });
-    } else if (data.type === 'start') { reset(); memoryStage = 'inference'; memoryCheckpoint(); }
+    } else if (data.type === 'start') { reset(); memoryStage = 'inference'; memoryCheckpoint(true); }
     else if (data.type === 'audio' && active) {
       const started = performance.now();
       const samples = new Float32Array(data.samples);
@@ -236,7 +259,7 @@ self.onmessage = ({ data }) => {
         restoreProfileConsole?.();
         send('speaker-profile', { profile: operatorProfile.snapshot() });
       }
-      pcm = new Float32Array(); cache = null; active = false; memoryStage = 'stopped'; memoryCheckpoint(); send('stopped', { elapsedMs, metrics: metrics(), audioSeconds: totalSamples / 16000 });
+      pcm = new Float32Array(); cache = null; active = false; memoryStage = 'stopped'; memoryCheckpoint(true); send('stopped', { elapsedMs, metrics: metrics(), audioSeconds: totalSamples / 16000 });
     }
   }).catch(error => { send('diagnostic-fault', {fault:{kind:'inference-error',name:error.name,message:error.message,stage:memoryStage,at:Date.now()}}); active = false; pcm = new Float32Array(); cache = null; send('error', { message: error.message || String(error) }); });
 };

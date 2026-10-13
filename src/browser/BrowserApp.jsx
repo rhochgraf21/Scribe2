@@ -1,5 +1,5 @@
 import { useWasmPadding } from './wasm-padding';
-import { DiagnosticRecorder } from './diagnostic-recorder';
+import { DiagnosticRecorder, DIAGNOSTIC_INTERVAL_MS } from './diagnostic-recorder';
 import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Captions, Mic, Square, Pause, Play, Plus, Minus, ShieldCheck, Settings, X, Maximize, Minimize } from 'lucide-react';
@@ -151,7 +151,7 @@ export default function BrowserApp() {
   recordingState.current = { phase, segmentCount:session.segments.length, transcriptCharacters:session.segments.reduce((n,s) => n + (s.text?.length || 0), 0), pendingSeconds:pending.current / 16000 };
   function checkpoint(event) { recorder.record(event, worker.current?.diagnostics(), recordingState.current); }
   useEffect(() => {
-    const timer = setInterval(() => { if (['loading','starting','listening','stopping'].includes(recordingState.current.phase)) checkpoint('sample'); }, 25);
+    const timer = setInterval(() => { if (['loading','starting','listening','stopping'].includes(recordingState.current.phase)) checkpoint('sample'); }, DIAGNOSTIC_INTERVAL_MS);
     const visibility = () => checkpoint(document.hidden ? 'hidden' : 'visible');
     document.addEventListener('visibilitychange', visibility);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visibility); };
@@ -282,7 +282,7 @@ export default function BrowserApp() {
       {diarizationTest && <section className="caption-setup" aria-label="Diarization isolation test">
         <h1>Q4 diarization · WebGPU only</h1>
         <p>Only the speaker model loads. Tiny and other speech models are excluded. Speak normally while this runs; no captions will appear.</p>
-        <p>Runtime: {wasmPadding ? 'padded Asyncify (experimental)' : 'original'}. Speaker history: 15.04 seconds. Diagnostic samples save every 25 ms.</p>
+        <p>Runtime: {wasmPadding ? 'padded Asyncify (experimental)' : 'original'}. Speaker history: 10 seconds. Diagnostic samples save every 10 seconds.</p>
         <p role="status">{status}</p>
         <p>Audio processed: {(diagnostics?.workers?.[0]?.audioSeconds || 0).toFixed(1)} s · Speaker calls: {diagnostics?.workers?.[0]?.metrics?.speakerCalls || 0}</p>
         <div><Button disabled={phase !== 'unloaded' || checking || !!modelFiles} onClick={download}>Download Q4 ({modelDownloadMB} MB)</Button>{' '}

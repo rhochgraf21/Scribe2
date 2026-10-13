@@ -1,3 +1,4 @@
+export const DIAGNOSTIC_INTERVAL_MS = 10_000;
 export const LOG_KEY = 'scribe-diagnostic-current-v1';
 export const PREVIOUS_KEY = 'scribe-diagnostic-previous-v1';
 const MAX_POINTS = 960;
@@ -25,7 +26,7 @@ export class DiagnosticRecorder {
       modelProfile:config.modelProfile, speakerDtype:config.speakerDtype,
       speakerDetection:config.speakerDetection, device:config.device, mode:config.mode,
       threadBudget:config.threadBudget, wasmPadding:!!config.wasmPadding, diarizationOnly:!!config.diarizationOnly, browser:config.browser,
-    }, sampleIntervalMs:25, maxPoints:MAX_POINTS, points:[], faults:[], runtimes:[], limitations:'WASM allocation is not resident RAM. GPU and total Safari memory are unavailable. Interrupted does not prove jetsam.' };
+    }, sampleIntervalMs:DIAGNOSTIC_INTERVAL_MS, maxPoints:MAX_POINTS, points:[], faults:[], runtimes:[], limitations:'WASM allocation is not resident RAM. GPU and total Safari memory are unavailable. Interrupted does not prove jetsam.' };
     this.record('load');
   }
   record(event, snapshot = {}, counts = {}) {

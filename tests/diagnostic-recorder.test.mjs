@@ -34,16 +34,17 @@ test('corrupt or blocked storage never prevents inference; current log remains e
  assert.doesNotThrow(()=>denied.clear());
 });
 
-test('every 25 ms sample is immediately saved without batching',()=>{
+test('sparse checkpoints and lifecycle events are immediately persisted',()=>{
  const store=storage(); let now=1000, writes=0;
  const set=store.setItem; store.setItem=(k,v)=>{writes++;set(k,v);};
  const recorder=new DiagnosticRecorder(store,()=>now); recorder.begin({device:'hybrid'});
+ assert.equal(recorder.current.sampleIntervalMs,10000);
  const initialWrites=writes;
  for(let i=1;i<=20;i++) {
-  now+=25; recorder.record('sample',{capturedSeconds:i*.025});
+  now+=10000; recorder.record('sample',{capturedSeconds:i*10});
   const saved=JSON.parse(store.getItem(LOG_KEY));
   assert.equal(saved.points.at(-1).at,now);
-  assert.equal(saved.points.at(-1).capturedSeconds,i*.025);
+  assert.equal(saved.points.at(-1).capturedSeconds,i*10);
   assert.equal(writes,initialWrites+i);
  }
  assert.equal(new DiagnosticRecorder(store).previous.points.at(-1).at,now);
