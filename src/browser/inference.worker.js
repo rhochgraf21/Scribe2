@@ -1,3 +1,4 @@
+import { installGpuDiagnostics } from './gpu-diagnostics.js';
 import { wasmMemorySnapshot } from './memory-probe.js';
 import { createOperatorProfile } from './operator-profile.js';
 import * as ort from 'onnxruntime-web/webgpu';
@@ -21,6 +22,7 @@ MODEL_TYPE_MAPPING.set(diarizationClassName, MODEL_TYPES.EncoderOnly);
 // Defence in depth: CSP also confines all network requests to this static origin.
 let modelFiles = {};
 let assetBase;
+let runtimeIdentity;
 const localFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = (input, options) => {
   const url = new URL(input instanceof Request ? input.url : input, self.location.href);
@@ -31,6 +33,10 @@ globalThis.fetch = (input, options) => {
     return Promise.resolve(file ? new Response(method === 'HEAD' ? null : file, { headers: { 'Content-Length': String(file.size) } }) : new Response(null, { status:404 }));
   }
   if (!assetBase || !url.href.startsWith(new URL('ort/', assetBase).href)) throw Error('Unexpected asset request');
+  if (url.pathname.endsWith('.wasm') && runtimeIdentity) {
+    runtimeIdentity.requestedWasm = url.pathname.split('/').pop();
+    send('runtime-info', {runtime:runtimeIdentity});
+  }
   return localFetch(input, { ...options, redirect: 'error' });
 };
 env.fetch = globalThis.fetch;
@@ -39,6 +45,10 @@ env.allowLocalModels = true;
 env.localModelPath = '/models/';
 env.useBrowserCache = false;
 env.useFSCache = false;
+// Keep explicit runtime URLs intact: the WASM cache rewrites the module to a
+// blob URL, which our Content Security Policy does not allow importing.
+env.useWasmCache = false;
+let observeGPU;
 let memoryStage = 'worker-start';
 let asr, model, processor, cache = null, pcm = new Float32Array(), base = 0, cursor = 0;
 let role = 'both', lastWords = [], threads = 1;
@@ -142,19 +152,24 @@ self.onmessage = ({ data }) => {
       if (role !== 'diar' && profile !== 'standard' && speechDevice !== 'wasm') throw Error('The selected INT8 model requires CPU processing');
       if (!['wasm','webgpu','hybrid'].includes(device)) throw Error('Invalid execution device');
       if (usesGPU) {
+        observeGPU = installGpuDiagnostics(globalThis, fault => send('diagnostic-fault', {fault:{...fault,stage:memoryStage,at:Date.now()}}), message => { active=false; send('error',{message}); });
         const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
         if (!adapter || adapter.info?.isFallbackAdapter) throw Error('Hardware WebGPU is unavailable. Choose CPU explicitly to continue.');
       }
       const speakerDtype = data.speakerDtype || 'q8';
       if (!['q8', 'q4', 'q4f16'].includes(speakerDtype)) throw Error('Invalid speaker precision');
       threads = self.crossOriginIsolated ? Math.max(1, Math.min(data.threads || 1, navigator.hardwareConcurrency || 1)) : 1;
+      const padded = data.wasmPadding === true;
+      const wasmPaths = padded ? {mjs:new URL('ort/ort-wasm-simd-threaded.asyncify.mjs',assetBase).href, wasm:new URL('ort/ort-wasm-simd-threaded.asyncify.padded.wasm',assetBase).href} : new URL('ort/', assetBase).href;
+      runtimeIdentity = {version:ort.env.versions.web, variant:padded ? 'asyncify-padded' : 'original', configuredWasm:padded ? 'ort-wasm-simd-threaded.asyncify.padded.wasm' : undefined, configuredMjs:padded ? 'ort-wasm-simd-threaded.asyncify.mjs' : undefined, jspiSupported:typeof WebAssembly.Suspending === 'function', browser:navigator.userAgent};
+      send('runtime-info', {runtime:runtimeIdentity});
       for (const runtime of [ort.env, env.backends.onnx]) {
-        runtime.wasm.wasmPaths = new URL('ort/', assetBase).href; runtime.wasm.numThreads = threads; runtime.wasm.proxy = false;
+        runtime.wasm.wasmPaths = wasmPaths; runtime.wasm.numThreads = threads; runtime.wasm.proxy = false;
       }
       if (role !== 'diar') {
         memoryStage = 'speech-load'; memoryCheckpoint();
         asr = profile.startsWith('moonshine-') ? new MoonshineBrowserASR() : new NemotronBrowserASR();
-        await asr.load(status, { fixedShapes: data.fixedShapes !== false, profile, device: speechDevice, threads, readModel: name => readModelBuffer(modelFiles[(profile.startsWith('moonshine-') ? `${profile}/` : profile === 'int8-dynamic' ? 'asr-int8/' : 'asr/') + name]), wasmPaths: new URL('ort/', assetBase).href, jointMode: data.jointMode || 'argmax' });
+        await asr.load(status, { fixedShapes: data.fixedShapes !== false, profile, device: speechDevice, threads, readModel: name => readModelBuffer(modelFiles[(profile.startsWith('moonshine-') ? `${profile}/` : profile === 'int8-dynamic' ? 'asr-int8/' : 'asr/') + name]), wasmPaths, jointMode: data.jointMode || 'argmax' });
       }
       if (role !== 'asr') {
         const runtimeOptions = data.speakerRuntimeOptions || {};
@@ -191,7 +206,7 @@ self.onmessage = ({ data }) => {
         model.config.streaming_config = { ...model.config.streaming_config,
           fifo_length: historyFrames, speaker_cache_update_period: historyFrames === 13 ? chunkFrames : historyFrames - 42 };
       }
-      if (usesGPU && ort.env.webgpu.device) ort.env.webgpu.device.lost.then(info => { active = false; send('error', { message: `GPU device lost: ${info.message || info.reason}. Reload models or choose CPU.` }); });
+      if (usesGPU && ort.env.webgpu.device) observeGPU(ort.env.webgpu.device);
       memoryStage = 'ready'; memoryCheckpoint();
       loadMs = performance.now() - loadStarted;
       send('ready', { threads, role, device, speechDevice: role === 'diar' ? undefined : speechDevice, speakerDevice: role === 'asr' ? undefined : speakerDevice, loadMs, speakerRuntimeOptions, speakerChunkFrames: processor ? processor.num_mel_frames_per_step / processor.subsampling_factor : undefined, speakerLookaheadFrames: processor ? 4 : undefined, speakerHistoryFrames: model?.config.streaming_config.fifo_length });
@@ -223,5 +238,5 @@ self.onmessage = ({ data }) => {
       }
       pcm = new Float32Array(); cache = null; active = false; memoryStage = 'stopped'; memoryCheckpoint(); send('stopped', { elapsedMs, metrics: metrics(), audioSeconds: totalSamples / 16000 });
     }
-  }).catch(error => { active = false; pcm = new Float32Array(); cache = null; send('error', { message: error.message || String(error) }); });
+  }).catch(error => { send('diagnostic-fault', {fault:{kind:'inference-error',name:error.name,message:error.message,stage:memoryStage,at:Date.now()}}); active = false; pcm = new Float32Array(); cache = null; send('error', { message: error.message || String(error) }); });
 };

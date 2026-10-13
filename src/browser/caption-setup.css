@@ -14,3 +14,5 @@
 .setup-speakers{display:flex;align-items:center;gap:8px;line-height:1.4}.setup-speakers input{flex-shrink:0}.setup-body .setup-phone-hint,.setup-body .setup-feature-note{font-size:.85rem;line-height:1.4}
 
 @media(max-height:600px) and (max-width:600px){.setup-only .setup-model{gap:5px}.setup-only .setup-body{gap:8px}.setup-only .setup-steps{margin-bottom:8px}}
+
+.brand-subtitle.setup-runtime-link{color:var(--primary);text-decoration:underline;text-underline-offset:3px}

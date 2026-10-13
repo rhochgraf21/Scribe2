@@ -243,3 +243,25 @@ test('mixed CPU/GPU keeps both models and acknowledgements in one worker', () =>
  assert.equal(threadPlan('parallel',8,false,'hybrid',6).both,1);
  assert.deepEqual(threadPlan('parallel',8,true,'hybrid',6,false),{mode:'speech-only',asr:6,budget:6});
 });
+
+test('diarization isolation loads one GPU worker with speaker files only and supports restart',()=>{
+ const workers=[],events=[];
+ const client=new InferenceClient({diarizationOnly:true,device:'webgpu',workerFactory:()=>{
+  const w={sent:[],postMessage(d){this.sent.push(d);},terminate(){this.terminated=true;},emit(data){this.onmessage({data});}};workers.push(w);return w;
+ }});
+ client.onmessage=({data})=>events.push(data);
+ client.postMessage({type:'load',speakerDtype:'q4',modelFiles:{'moonshine-tiny/frontend.onnx':{},'diar/config.json':{}}});
+ assert.equal(workers.length,1);const w=workers[0];assert.equal(w.sent[0].role,'diar');assert.equal(w.sent[0].device,'webgpu');
+ assert.deepEqual(Object.keys(w.sent[0].modelFiles),['diar/config.json']);
+ w.emit({type:'ready'});assert.equal(events.at(-1).plan.mode,'diarization-only');
+ for(let run=0;run<2;run++) {
+  client.postMessage({type:'start'});client.postMessage({type:'audio',samples:new Float32Array(16000*16).buffer});
+  assert.ok(!w.terminated); // no ASR-only lag watchdog
+  w.emit({type:'activity',frames:1,logits:new Float32Array(8).buffer});
+  assert.equal(client.updates.activity.length,0);
+  w.emit({type:'ack',samples:16000*16,elapsedMs:100});assert.equal(events.at(-1).samples,16000*16);
+  client.postMessage({type:'stop'});w.emit({type:'stopped'});assert.equal(events.at(-1).type,'stopped');
+ }
+ w.emit({type:'diagnostic-fault',fault:{kind:'gpu-device-lost',message:'test'}});assert.equal(events.at(-1).fault.message,'test');
+ assert.ok(!events.some(e=>e.type==='captions'));
+});

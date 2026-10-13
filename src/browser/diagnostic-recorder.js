@@ -24,8 +24,8 @@ export class DiagnosticRecorder {
     this.current = { version:1, startedAt:this.now(), state:'loading', config:{
       modelProfile:config.modelProfile, speakerDtype:config.speakerDtype,
       speakerDetection:config.speakerDetection, device:config.device, mode:config.mode,
-      threadBudget:config.threadBudget,
-    }, sampleIntervalMs:25, maxPoints:MAX_POINTS, points:[], limitations:'WASM allocation is not resident RAM. GPU and total Safari memory are unavailable. Interrupted does not prove jetsam.' };
+      threadBudget:config.threadBudget, wasmPadding:!!config.wasmPadding, diarizationOnly:!!config.diarizationOnly, browser:config.browser,
+    }, sampleIntervalMs:25, maxPoints:MAX_POINTS, points:[], faults:[], runtimes:[], limitations:'WASM allocation is not resident RAM. GPU and total Safari memory are unavailable. Interrupted does not prove jetsam.' };
     this.record('load');
   }
   record(event, snapshot = {}, counts = {}) {
@@ -44,6 +44,21 @@ export class DiagnosticRecorder {
     const json = JSON.stringify(this.current);
     try { this.storage.setItem(LOG_KEY, json); this.available = true; }
     catch { this.available = false; }
+  }
+  runtime(runtime) {
+    if (!this.current) return;
+    const info = Object.fromEntries(['version','variant','configuredWasm','configuredMjs','requestedWasm','browser'].filter(k=>typeof runtime[k] === 'string').map(k=>[k,runtime[k].slice(0,300)]));
+    info.jspiSupported = !!runtime.jspiSupported;
+    const index = this.current.runtimes.findIndex(r=>r.configuredWasm === info.configuredWasm);
+    if (index >= 0) this.current.runtimes[index] = info; else if (this.current.runtimes.length < 4) this.current.runtimes.push(info);
+    this.record('runtime-info');
+  }
+  fault(fault) {
+    if (!this.current || !['gpu-uncaptured','gpu-device-lost','gpu-device-request','gpu-observer-ready','gpu-observer-unavailable','inference-error'].includes(fault?.kind)) return;
+    const clean = value => typeof value === 'string' ? value.replace(/(?:https?:|blob:|file:)[^\s]+/g, '[URL]').slice(0,1500) : undefined;
+    this.current.faults.push({at:this.now(),kind:fault.kind,name:clean(fault.name),reason:clean(fault.reason),message:clean(fault.message),stage:clean(fault.stage)});
+    if (this.current.faults.length > 32) this.current.faults.shift();
+    this.record('diagnostic-fault'); // Persist immediately, before a fatal error terminates the worker.
   }
   clear() {
     this.current = this.previous = null;

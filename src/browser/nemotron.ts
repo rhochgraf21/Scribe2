@@ -53,7 +53,7 @@ export class NemotronBrowserASR {
   private streamProcessedSamples = 0;
   private streamLanguageId = 101;
 
-  async load(onStatus: (message: string) => void, options: {fixedShapes?: boolean, profile?: 'standard' | 'int8-dynamic', readModel?: (name: string) => Promise<Uint8Array>, wasmPaths?: string, device?: 'wasm' | 'webgpu', threads?: number, jointMode?: 'logits' | 'argmax' | 'verify'} = {}): Promise<void> {
+  async load(onStatus: (message: string) => void, options: {fixedShapes?: boolean, profile?: 'standard' | 'int8-dynamic', readModel?: (name: string) => Promise<Uint8Array>, wasmPaths?: string | {mjs:string, wasm:string}, device?: 'wasm' | 'webgpu', threads?: number, jointMode?: 'logits' | 'argmax' | 'verify'} = {}): Promise<void> {
     if (this.sessions) return;
     ort.env.wasm.numThreads = globalThis.crossOriginIsolated
       ? Math.max(1, Math.min(options.threads ?? 4, navigator.hardwareConcurrency || 1))

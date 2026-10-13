@@ -13,16 +13,18 @@ export function threadPlan(mode, hardware = 1, isolated = false, device = 'wasm'
   return { mode:'parallel', asr, diar:budget - asr, budget };
 }
 export class InferenceClient {
-  constructor({ speakerDetection = true, device = 'wasm', mode = 'sequential', jointMode = 'argmax', threadBudget = 4, hardware = globalThis.navigator?.hardwareConcurrency, isolated = globalThis.crossOriginIsolated, workerFactory = () => new Worker(new URL('./inference.worker.js', import.meta.url), { type:'module' }) } = {}) {
+  constructor({ diarizationOnly = false, speakerDetection = true, device = 'wasm', mode = 'sequential', jointMode = 'argmax', threadBudget = 4, hardware = globalThis.navigator?.hardwareConcurrency, isolated = globalThis.crossOriginIsolated, workerFactory = () => new Worker(new URL('./inference.worker.js', import.meta.url), { type:'module' }) } = {}) {
     if (!['wasm','webgpu','hybrid'].includes(device)) throw Error('Invalid execution device');
+    this.diarizationOnly = diarizationOnly;
+    if (diarizationOnly && (device !== 'webgpu' || !speakerDetection)) throw Error('Diarization-only test requires WebGPU speaker detection');
     this.device = device; this.speakerDetection = speakerDetection;
-    this.plan = threadPlan(mode, hardware, isolated, device, threadBudget, speakerDetection);
+    this.plan = diarizationOnly ? {mode:'diarization-only',diar:1,budget:1} : threadPlan(mode, hardware, isolated, device, threadBudget, speakerDetection);
     this.hardware = hardware; this.isolated = isolated;
     this.jointMode = jointMode;
     this.pendingLoads = [];
     this.onmessage = null; this.onerror = null; this.closed = false;
     this.updates = new CaptionUpdates(); this.updates.speakerDetectionEnded = !this.speakerDetection; this.words = []; this.acked = 0; this.sentSamples = 0;
-    this.members = (!speakerDetection ? ['asr'] : this.plan.mode === 'parallel' ? ['asr','diar'] : ['both']).map(role => {
+    this.members = (diarizationOnly ? ['diar'] : !speakerDetection ? ['asr'] : this.plan.mode === 'parallel' ? ['asr','diar'] : ['both']).map(role => {
       const member = { role, worker:workerFactory(), ready:false, stopped:false, processed:0, elapsedMs:0 };
       member.worker.onmessage = event => this.receive(member,event.data);
       member.worker.onerror = event => this.fail(event.message || 'Inference worker failed');
@@ -31,12 +33,12 @@ export class InferenceClient {
   }
   diagnostics() {
     return {
-      speakerDtype: this.speakerDtype, speakerDetection: this.speakerDetection, modelProfile: this.modelProfile, fixedShapes: this.fixedShapes,
+      diarizationOnly:this.diarizationOnly, speakerDtype: this.speakerDtype, speakerDetection: this.speakerDetection, modelProfile: this.modelProfile, fixedShapes: this.fixedShapes,
       plan: this.plan, hardwareConcurrency: this.hardware, crossOriginIsolated: this.isolated,
       capturedSeconds: this.sentSamples / 16000,
       workers: this.members.map(m => ({role:m.role, disabled:!!m.disabled, threads:m.threads, speechDevice:m.speechDevice, speakerDevice:m.speakerDevice,
         speakerRuntimeOptions:m.speakerRuntimeOptions, speakerHistoryFrames:m.speakerHistoryFrames, speakerChunkFrames:m.speakerChunkFrames, speakerLookaheadFrames:m.speakerLookaheadFrames,
-        memory:m.memory, loadMs:m.loadMs, audioSeconds:m.processed/16000, computeMs:m.elapsedMs,
+        runtime:m.runtime, memory:m.memory, loadMs:m.loadMs, audioSeconds:m.processed/16000, computeMs:m.elapsedMs,
         queuedSeconds:Math.max(0,(this.sentSamples-m.processed)/16000), metrics:m.metrics || {}})),
     };
   }
@@ -44,6 +46,7 @@ export class InferenceClient {
   fail(message) { this.emit({ type:'error', message }); this.terminate(); }
   receive(member,data) {
     if (this.closed || member.disabled) return;
+    if (data.type === 'runtime-info') { member.runtime = data.runtime; this.emit(data); return; }
     if (data.type === 'memory') { member.memory = data.memory; return; }
     if (data.type === 'error') return this.fail(data.message);
     if (data.type === 'ready') {
@@ -54,6 +57,7 @@ export class InferenceClient {
       if (next) { this.emit({type:'status', message:'Speech model ready. Loading speaker detection…'}); next.member.worker.postMessage(next.data); }
       if (this.members.every(m=>m.ready)) this.emit({ type:'ready', plan:this.plan, device:this.device, diagnostics:this.diagnostics() });
     } else if (data.type === 'words' || data.type === 'activity') {
+      if (this.diarizationOnly) return; // Do not retain probabilities or generate a transcript in the isolation test.
       if (data.type === 'words') {
         this.words.length = data.from;
         this.words.push(...data.words);
@@ -65,7 +69,7 @@ export class InferenceClient {
       if (patch) this.emit({ type:'captions', ...patch });
     } else if (data.type === 'ack') {
       member.processed += data.samples; member.elapsedMs = data.elapsedMs; member.metrics = data.metrics;
-      const completed = this.device === 'webgpu' ? this.members.find(m=>m.role==='asr').processed : Math.min(...this.members.map(m=>m.processed));
+      const completed = this.device === 'webgpu' && !this.diarizationOnly ? this.members.find(m=>m.role==='asr').processed : Math.min(...this.members.map(m=>m.processed));
       const samples = completed - this.acked;
       if (samples > 0) {
         this.acked = completed;
@@ -96,7 +100,7 @@ export class InferenceClient {
     if (data.type === 'audio') {
       // Transfer ownership; only the second worker needs an independent copy.
       this.sentSamples += data.samples.byteLength / 4;
-      if (this.device === 'webgpu') {
+      if (this.device === 'webgpu' && !this.diarizationOnly) {
         const diar = this.members.find(m=>m.role==='diar');
         if (diar && !diar.disabled && this.sentSamples - diar.processed > 15 * 16000) {
           diar.disabled = true; diar.worker.terminate(); this.updates.speakerDetectionEnded = true;

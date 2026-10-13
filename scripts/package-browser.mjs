@@ -1,3 +1,5 @@
+import { padWasm } from './pad-wasm.mjs';
+import { createHash } from 'node:crypto';
 import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -24,3 +26,16 @@ await cp('src/browser/MOONSHINE-LICENSE', `${root}/licenses/moonshine.txt`);
 
 await cp('config/diar-q4f16.json', `${root}/licenses/diar-q4f16-manifest.json`);
 await cp('config/diar-q4.json', `${root}/licenses/diar-q4-manifest.json`);
+
+// Keep the upstream binary alongside a separately named experimental artifact.
+const originalWasm = await readFile(`${runtime}/ort-wasm-simd-threaded.asyncify.wasm`);
+const padded = padWasm(originalWasm);
+if (!WebAssembly.validate(padded.bytes)) throw Error('Padded runtime failed WASM validation');
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+await writeFile(`${root}/ort/ort-wasm-simd-threaded.asyncify.padded.wasm`, padded.bytes);
+await writeFile(`${root}/ort/padding-manifest.json`, JSON.stringify({
+  experimental:true, strategy:'skip-nops-before-function-end', minimum:padded.minimum,target:padded.target,
+  original:{bytes:originalWasm.length,sha256:digest(originalWasm)},
+  padded:{bytes:padded.bytes.length,sha256:digest(padded.bytes)}, functions:padded.changed,
+},null,2));
+console.log(`Experimental WASM: padded ${padded.changed.length} functions; added ${padded.bytes.length-originalWasm.length} bytes.`);
