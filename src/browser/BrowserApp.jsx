@@ -1,3 +1,4 @@
+import { useWasmPadding } from './wasm-padding';
 import { DiagnosticRecorder } from './diagnostic-recorder';
 import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
@@ -15,7 +16,7 @@ import { captionDefaults, captionModelEntries, speechOnlyDescription } from './c
 import { InferenceClient } from './inference-client';
 
 export default function BrowserApp() {
-  const [wasmPadding] = useState(() => new URL(location.href).searchParams.get('wasm-padding') === '1');
+  const [wasmPadding] = useState(() => useWasmPadding(location.search, navigator));
   const [diarizationTest] = useState(() => new URL(location.href).searchParams.get('diarization-test') === '1');
   const [recorder] = useState(() => { let storage; try { storage = localStorage; } catch {} return new DiagnosticRecorder(storage); });
   const recordingState = useRef({});
@@ -264,8 +265,7 @@ export default function BrowserApp() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   const paddingUrl = new URL(location.href);
-  if (wasmPadding) paddingUrl.searchParams.delete('wasm-padding');
-  else paddingUrl.searchParams.set('wasm-padding', '1');
+  paddingUrl.searchParams.set('wasm-padding', wasmPadding ? '0' : '1');
   const setupVisible = !enteredConversation || ['unloaded', 'loading'].includes(phase);
   const toggleHold = () => { if (!holding) setHeld(structuredClone(session)); setHolding(!holding); };
   return <div className={`app-shell ${setupVisible ? 'setup-active' : ''} ${contrast ? 'high-contrast' : ''}`}>
@@ -282,7 +282,7 @@ export default function BrowserApp() {
       {diarizationTest && <section className="caption-setup" aria-label="Diarization isolation test">
         <h1>Q4 diarization · WebGPU only</h1>
         <p>Only the speaker model loads. Tiny and other speech models are excluded. Speak normally while this runs; no captions will appear.</p>
-        <p>Runtime: {wasmPadding ? 'padded Asyncify (experimental)' : 'original'}. Temporary history: 1.04 seconds. Diagnostic samples save every 25 ms.</p>
+        <p>Runtime: {wasmPadding ? 'padded Asyncify (experimental)' : 'original'}. Speaker history: 15.04 seconds. Diagnostic samples save every 25 ms.</p>
         <p role="status">{status}</p>
         <p>Audio processed: {(diagnostics?.workers?.[0]?.audioSeconds || 0).toFixed(1)} s · Speaker calls: {diagnostics?.workers?.[0]?.metrics?.speakerCalls || 0}</p>
         <div><Button disabled={phase !== 'unloaded' || checking || !!modelFiles} onClick={download}>Download Q4 ({modelDownloadMB} MB)</Button>{' '}
@@ -319,7 +319,7 @@ export default function BrowserApp() {
         <section className="privacy-card"><ShieldCheck size={20} aria-hidden="true"/><div><h2>Audio stays in this browser</h2><p>No inference server, recording, or audio uploads. Refresh clears the conversation. Models are imported or downloaded on request; app code loads from this website. Only model files may be saved, never conversations.</p></div></section>
         <section hidden={diarizationTest} className="tool-section"><label htmlFor="execution-device">Processing</label><select id="execution-device" data-slot="native-select" value={deviceMode} disabled={phase !== 'unloaded'} onChange={event => setDeviceMode(event.target.value)}><option value="hybrid" disabled={!speakerDetection}>CPU speech + WebGPU speakers (shared worker)</option><option value="webgpu" disabled={modelProfiles[modelProfile].cpuOnly}>WebGPU speech + speakers</option><option value="wasm">CPU only</option></select><p className="input-description">{!speakerDetection ? 'Only speech recognition is loaded. Speaker detection is off.' : deviceMode === 'hybrid' ? 'Speech uses the CPU and speaker detection uses WebGPU in one shared worker. Requires hardware WebGPU; choose CPU only if unavailable.' : deviceMode === 'webgpu' ? 'Speech and speaker detection use the GPU; token decoding uses the CPU.' : 'Speech and speaker detection use the CPU. Phone speed and memory use are not yet validated.'} CPU uses one thread without cross-origin isolation.</p><label htmlFor="cpu-mode">Worker scheduling</label><select id="cpu-mode" data-slot="native-select" value={deviceMode === 'hybrid' ? 'sequential' : deviceMode === 'webgpu' ? 'parallel' : cpuMode} disabled={!speakerDetection || phase !== 'unloaded' || deviceMode !== 'wasm'} onChange={event => setCpuMode(event.target.value)}><option value="sequential">Shared worker</option><option value="parallel">Separate workers (experimental)</option></select><p className="input-description">{speakerDetection ? 'Mixed CPU/WebGPU uses one shared worker. All-WebGPU uses separate workers. CPU-only scheduling can be chosen before loading models.' : 'Speech-only captions use one speech worker. Refresh to change speaker detection after loading.'}</p></section>
         {!diarizationTest && <section className="tool-section"><h2>WebGPU crash isolation</h2><p>Reload into a Q4-only microphone test. No speech model is loaded. Download the current diagnostic run first if you need it.</p><Button id="diarization-only-test" variant="outline" onClick={() => { const url=new URL(location.href); url.searchParams.set('diarization-test','1'); location.assign(url.href); }}>Test Q4 alone on WebGPU</Button></section>}
-        <section className="tool-section"><h2>Safari compiler experiment</h2><p>Runtime: <strong>{wasmPadding ? 'Padded Asyncify (experimental)' : 'Original'}</strong>. Padding aims to keep selected large functions out of Safari’s optimizing compiler. It may reduce CPU speed and has not been validated on your iPhone.</p><Button id="toggle-wasm-padding" variant="outline" onClick={() => { const url=new URL(location.href); if(wasmPadding) url.searchParams.delete('wasm-padding'); else url.searchParams.set('wasm-padding','1'); location.assign(url.href); }}>{wasmPadding ? 'Use original runtime and reload' : 'Use padded runtime and reload'}</Button><p>Reloading stops the current session. Then load models and start the same test again. The selected runtime is included in diagnostic downloads.</p></section>
+        <section className="tool-section"><h2>Safari compiler experiment</h2><p>Runtime: <strong>{wasmPadding ? 'Padded Asyncify (experimental)' : 'Original'}</strong>. Padding aims to keep selected large functions out of Safari’s optimizing compiler. Enabled by default for WebKit browsers. It may reduce CPU speed.</p><Button id="toggle-wasm-padding" variant="outline" onClick={() => { location.assign(paddingUrl.href); }}>{wasmPadding ? 'Use original runtime and reload' : 'Use padded runtime and reload'}</Button><p>Reloading stops the current session. Then load models and start the same test again. The selected runtime is included in diagnostic downloads.</p></section>
         <Diagnostics recorder={recorder} speakerDetection={speakerDetection} snapshot={diagnostics} modelProfile={modelProfile} device={deviceMode} threadBudget={threadBudget} onThreadBudget={setThreadBudget} unloaded={phase === 'unloaded'}/>
         <p className="small-note">Experimental · English captions · {modelProfiles[modelProfile].label}{speakerDetection ? ` + diarization ${speakerDtype}.` : ' · speech only.'} Processing speed depends on the device. {speed !== null && <span id="cpu-speed">Processing: {speed.toFixed(2)}× real time (1× keeps pace).</span>}</p>
       </aside></dialog>
