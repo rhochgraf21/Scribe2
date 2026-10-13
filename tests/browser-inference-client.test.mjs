@@ -207,3 +207,39 @@ test('normal Q4 selection reaches the speaker worker', () => {
  assert.deepEqual(Object.keys(diar.sent[0].data.modelFiles),['diar/onnx/model_q4.onnx','diar/onnx/model_q4.onnx_data']);
  assert.equal(client.diagnostics().speakerDtype,'q4');
 });
+
+test('mixed CPU/GPU keeps both models and acknowledgements in one worker', () => {
+ const workers=[], events=[];
+ const client=new InferenceClient({device:'hybrid',mode:'parallel',hardware:8,isolated:true,threadBudget:6,workerFactory:()=>{
+  const worker={sent:[],postMessage(data){this.sent.push(data);},terminate(){this.terminated=true;},emit(data){this.onmessage({data});}};
+  workers.push(worker); return worker;
+ }});
+ client.onmessage=({data})=>events.push(data);
+ assert.deepEqual(client.plan,{mode:'sequential',both:6,budget:6});
+ assert.equal(workers.length,1);
+ const worker=workers[0];
+ const modelFiles={'moonshine-tiny/frontend.onnx':{},'diar/onnx/model_q4.onnx':{}};
+ client.postMessage({type:'load',modelProfile:'moonshine-tiny',speakerDtype:'q4',modelFiles});
+ assert.equal(worker.sent[0].device,'hybrid');
+ assert.equal(worker.sent[0].role,'both');
+ assert.deepEqual(worker.sent[0].modelFiles,modelFiles);
+ worker.emit({type:'ready',speechDevice:'wasm',speakerDevice:'webgpu',speakerHistoryFrames:125});
+ assert.equal(events.at(-1).diagnostics.workers[0].speakerHistoryFrames,125);
+ assert.equal(events.at(-1).diagnostics.workers[0].speechDevice,'wasm');
+ assert.equal(events.at(-1).diagnostics.workers[0].speakerDevice,'webgpu');
+ for(let run=0;run<2;run++) {
+  client.postMessage({type:'start'});
+  client.postMessage({type:'audio',samples:new Float32Array(16000).buffer});
+  worker.emit({type:'captions',segments:[{text:'Hello',speaker:1}]});
+  assert.equal(events.at(-1).segments[0].speaker,1);
+  worker.emit({type:'ack',samples:16000,elapsedMs:100});
+  assert.equal(events.at(-1).samples,16000);
+  client.postMessage({type:'stop'}); worker.emit({type:'stopped'});
+  assert.equal(events.at(-1).type,'stopped');
+ }
+ worker.emit({type:'error',message:'Hardware WebGPU unavailable'});
+ assert.ok(worker.terminated);
+ assert.equal(workers.length,1); // no implicit CPU replacement
+ assert.equal(threadPlan('parallel',8,false,'hybrid',6).both,1);
+ assert.deepEqual(threadPlan('parallel',8,true,'hybrid',6,false),{mode:'speech-only',asr:6,budget:6});
+});

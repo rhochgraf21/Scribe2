@@ -49,7 +49,7 @@ const send = (type, value = {}) => postMessage({ type, ...value });
 const status = message => send('status', { message });
 function reset() {
   speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
-  if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; }
+  if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; speakerMetrics.speakerOutputsFinite = true; }
   cache = null; pcm = new Float32Array(); base = cursor = totalSamples = elapsedMs = 0;
   updates = new CaptionUpdates(); asr?.startStream(101); lastWords = []; active = true;
 }
@@ -73,6 +73,7 @@ async function diarize(flush) {
     speakerMetrics.speakerMs += performance.now() - speakerStarted; speakerMetrics.speakerCalls++;
     if (compareSpeakerOutputs) {
       const values = outputs.logits.data;
+      speakerMetrics.speakerOutputsFinite &&= values.every(Number.isFinite);
       const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
       let hash = speakerMetrics.speakerOutputHash;
       for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
@@ -114,25 +115,28 @@ self.onmessage = ({ data }) => {
       assetBase = data.assetBase;
       if (!assetBase || new URL(assetBase).origin !== self.location.origin) throw Error('Invalid asset origin');
       const device = data.device || 'wasm';
+      role = data.role || 'both';
+      if (!['both','asr','diar'].includes(role)) throw Error('Invalid inference role');
+      const speechDevice = device === 'hybrid' ? 'wasm' : device;
+      const speakerDevice = device === 'hybrid' ? 'webgpu' : device;
+      const usesGPU = (role !== 'diar' && speechDevice === 'webgpu') || (role !== 'asr' && speakerDevice === 'webgpu');
       const profile = data.modelProfile || 'standard';
       if (!['standard', 'int8-dynamic', 'moonshine-tiny', 'moonshine-small'].includes(profile)) throw Error('Invalid speech model');
-      if (profile !== 'standard' && device !== 'wasm') throw Error('The selected INT8 model requires CPU processing');
-      if (!['wasm','webgpu'].includes(device)) throw Error('Invalid execution device');
-      if (device === 'webgpu') {
+      if (role !== 'diar' && profile !== 'standard' && speechDevice !== 'wasm') throw Error('The selected INT8 model requires CPU processing');
+      if (!['wasm','webgpu','hybrid'].includes(device)) throw Error('Invalid execution device');
+      if (usesGPU) {
         const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
         if (!adapter || adapter.info?.isFallbackAdapter) throw Error('Hardware WebGPU is unavailable. Choose CPU explicitly to continue.');
       }
       const speakerDtype = data.speakerDtype || 'q8';
       if (!['q8', 'q4', 'q4f16'].includes(speakerDtype)) throw Error('Invalid speaker precision');
-      role = data.role || 'both';
-      if (!['both','asr','diar'].includes(role)) throw Error('Invalid inference role');
       threads = self.crossOriginIsolated ? Math.max(1, Math.min(data.threads || 1, navigator.hardwareConcurrency || 1)) : 1;
       for (const runtime of [ort.env, env.backends.onnx]) {
         runtime.wasm.wasmPaths = new URL('ort/', assetBase).href; runtime.wasm.numThreads = threads; runtime.wasm.proxy = false;
       }
       if (role !== 'diar') {
         asr = profile.startsWith('moonshine-') ? new MoonshineBrowserASR() : new NemotronBrowserASR();
-        await asr.load(status, { fixedShapes: data.fixedShapes !== false, profile, device, threads, readModel: name => readModelBuffer(modelFiles[(profile.startsWith('moonshine-') ? `${profile}/` : profile === 'int8-dynamic' ? 'asr-int8/' : 'asr/') + name]), wasmPaths: new URL('ort/', assetBase).href, jointMode: data.jointMode || 'argmax' });
+        await asr.load(status, { fixedShapes: data.fixedShapes !== false, profile, device: speechDevice, threads, readModel: name => readModelBuffer(modelFiles[(profile.startsWith('moonshine-') ? `${profile}/` : profile === 'int8-dynamic' ? 'asr-int8/' : 'asr/') + name]), wasmPaths: new URL('ort/', assetBase).href, jointMode: data.jointMode || 'argmax' });
       }
       if (role !== 'asr') {
         const runtimeOptions = data.speakerRuntimeOptions || {};
@@ -158,18 +162,18 @@ self.onmessage = ({ data }) => {
         // Custom chunk size; retain the recommended four-frame right context.
         processor.streaming_modes = { ...processor.streaming_modes, buffered: [chunkFrames, 4] };
         processor.set_streaming_mode('buffered');
-        model = await Nemotron3DiarizationForAudioFrameClassification.from_pretrained('diar', { device, dtype: speakerDtype, local_files_only: true,
+        model = await Nemotron3DiarizationForAudioFrameClassification.from_pretrained('diar', { device: speakerDevice, dtype: speakerDtype, local_files_only: true,
           session_options: { ...speakerRuntimeOptions, ...(data.speakerFixedBatch ? { freeDimensionOverrides: { batch_size: 1 } } : {}) } });
-        const historyFrames = data.speakerHistoryFrames ?? 200;
-        if (![150, 200, 264].includes(historyFrames)) throw Error('Invalid speaker history size');
+        const historyFrames = data.speakerHistoryFrames ?? 125;
+        if (![125, 150, 200, 264].includes(historyFrames)) throw Error('Invalid speaker history size');
         // Preserve the original 42-frame overlap when moving old FIFO frames
         // into the separate, unchanged speaker-identity cache.
         model.config.streaming_config = { ...model.config.streaming_config,
           fifo_length: historyFrames, speaker_cache_update_period: historyFrames - 42 };
       }
-      if (device === 'webgpu' && ort.env.webgpu.device) ort.env.webgpu.device.lost.then(info => { active = false; send('error', { message: `GPU device lost: ${info.message || info.reason}. Reload models or choose CPU.` }); });
+      if (usesGPU && ort.env.webgpu.device) ort.env.webgpu.device.lost.then(info => { active = false; send('error', { message: `GPU device lost: ${info.message || info.reason}. Reload models or choose CPU.` }); });
       loadMs = performance.now() - loadStarted;
-      send('ready', { threads, role, device, loadMs, speakerRuntimeOptions, speakerChunkFrames: processor ? processor.num_mel_frames_per_step / processor.subsampling_factor : undefined, speakerLookaheadFrames: processor ? 4 : undefined, speakerHistoryFrames: model?.config.streaming_config.fifo_length });
+      send('ready', { threads, role, device, speechDevice: role === 'diar' ? undefined : speechDevice, speakerDevice: role === 'asr' ? undefined : speakerDevice, loadMs, speakerRuntimeOptions, speakerChunkFrames: processor ? processor.num_mel_frames_per_step / processor.subsampling_factor : undefined, speakerLookaheadFrames: processor ? 4 : undefined, speakerHistoryFrames: model?.config.streaming_config.fifo_length });
     } else if (data.type === 'start') reset();
     else if (data.type === 'audio' && active) {
       const started = performance.now();

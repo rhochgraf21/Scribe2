@@ -6,9 +6,9 @@ import { transcriptText } from '../src/browser/speaker-names.js';
 
 test('phones start with Tiny, CPU and no speaker model; desktops retain full features', () => {
  for (const browser of [{ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' }, { userAgent: 'Mozilla/5.0 (Linux; Android 15) Mobile' }, { userAgentData: { mobile: true } }]) {
-  assert.deepEqual(captionDefaults(browser), { phone: true, modelProfile: 'moonshine-tiny', speakerDetection: false, device: 'wasm' });
+  assert.deepEqual(captionDefaults(browser), { phone: true, cpuMode: 'sequential', speakerDtype: 'q4', modelProfile: 'moonshine-tiny', speakerDetection: false, device: 'wasm' });
  }
- assert.deepEqual(captionDefaults({ userAgent: 'Mozilla/5.0 Macintosh' }), { phone: false, modelProfile: 'standard', speakerDetection: true, device: 'webgpu' });
+ assert.deepEqual(captionDefaults({ userAgent: 'Mozilla/5.0 Macintosh' }), { phone: false, cpuMode: 'parallel', speakerDtype: 'q8', modelProfile: 'standard', speakerDetection: true, device: 'webgpu' });
 });
 test('speech-only requirements omit diarization for every model and reduce Tiny to about 78 MB', async () => {
  for (const profile of Object.values(modelProfiles)) {

@@ -7,14 +7,14 @@ export function threadPlan(mode, hardware = 1, isolated = false, device = 'wasm'
   const budget = isolated ? Math.min(threadBudget, cores) : 1;
   if (!speakerDetection) return { mode:'speech-only', asr:device === 'webgpu' ? 1 : budget, budget:device === 'webgpu' ? 1 : budget };
   if (device === 'webgpu') return { mode:'parallel', asr:1, diar:Math.max(1,budget-1), budget:Math.max(2,budget) };
-  if (mode !== 'parallel' || budget < 2) return { mode:'sequential', both:budget, budget };
+  if (device === 'hybrid' || mode !== 'parallel' || budget < 2) return { mode:'sequential', both:budget, budget };
   // Six-thread preset leaves two threads for speech and four for speakers.
   const asr = threadBudget === 6 ? Math.min(2, Math.ceil(budget / 2)) : Math.ceil(budget / 2);
   return { mode:'parallel', asr, diar:budget - asr, budget };
 }
 export class InferenceClient {
   constructor({ speakerDetection = true, device = 'wasm', mode = 'sequential', jointMode = 'argmax', threadBudget = 4, hardware = globalThis.navigator?.hardwareConcurrency, isolated = globalThis.crossOriginIsolated, workerFactory = () => new Worker(new URL('./inference.worker.js', import.meta.url), { type:'module' }) } = {}) {
-    if (!['wasm','webgpu'].includes(device)) throw Error('Invalid execution device');
+    if (!['wasm','webgpu','hybrid'].includes(device)) throw Error('Invalid execution device');
     this.device = device; this.speakerDetection = speakerDetection;
     this.plan = threadPlan(mode, hardware, isolated, device, threadBudget, speakerDetection);
     this.hardware = hardware; this.isolated = isolated;
@@ -34,7 +34,7 @@ export class InferenceClient {
       speakerDtype: this.speakerDtype, speakerDetection: this.speakerDetection, modelProfile: this.modelProfile, fixedShapes: this.fixedShapes,
       plan: this.plan, hardwareConcurrency: this.hardware, crossOriginIsolated: this.isolated,
       capturedSeconds: this.sentSamples / 16000,
-      workers: this.members.map(m => ({role:m.role, disabled:!!m.disabled, threads:m.threads,
+      workers: this.members.map(m => ({role:m.role, disabled:!!m.disabled, threads:m.threads, speechDevice:m.speechDevice, speakerDevice:m.speakerDevice,
         speakerRuntimeOptions:m.speakerRuntimeOptions, speakerHistoryFrames:m.speakerHistoryFrames, speakerChunkFrames:m.speakerChunkFrames, speakerLookaheadFrames:m.speakerLookaheadFrames,
         loadMs:m.loadMs, audioSeconds:m.processed/16000, computeMs:m.elapsedMs,
         queuedSeconds:Math.max(0,(this.sentSamples-m.processed)/16000), metrics:m.metrics || {}})),
@@ -46,6 +46,7 @@ export class InferenceClient {
     if (this.closed || member.disabled) return;
     if (data.type === 'error') return this.fail(data.message);
     if (data.type === 'ready') {
+      member.speechDevice = data.speechDevice; member.speakerDevice = data.speakerDevice;
       member.ready = true; member.threads = data.threads; member.loadMs = data.loadMs;
       member.speakerRuntimeOptions = data.speakerRuntimeOptions; member.speakerHistoryFrames = data.speakerHistoryFrames; member.speakerChunkFrames = data.speakerChunkFrames; member.speakerLookaheadFrames = data.speakerLookaheadFrames;
       const next = this.pendingLoads.shift();

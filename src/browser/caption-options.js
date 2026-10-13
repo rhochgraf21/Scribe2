@@ -2,7 +2,7 @@ export const speechOnlyDescription = 'Live captions only. Speaker labels, Table 
 
 export function captionDefaults(browser = globalThis.navigator) {
   const phone = Boolean(browser?.userAgentData?.mobile || /iPhone|iPod|Android.*Mobile/i.test(browser?.userAgent || ''));
-  return { phone, modelProfile: phone ? 'moonshine-tiny' : 'standard', speakerDetection: !phone, device: phone ? 'wasm' : 'webgpu' };
+  return { phone, cpuMode: phone ? 'sequential' : 'parallel', speakerDtype: phone ? 'q4' : 'q8', modelProfile: phone ? 'moonshine-tiny' : 'standard', speakerDetection: !phone, device: phone ? 'wasm' : 'webgpu' };
 }
 
 export function captionModelEntries(profile, speakerDetection = true, speakerEntries) {
