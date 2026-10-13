@@ -1,8 +1,17 @@
+import { useState } from 'react';
 import { isolationStatus } from '../browser/isolation';
 import { Button } from './ui/button';
 const stages = [['featuresMs','Speech preparation'],['encoderMs','Speech encoder'],['decoderMs','Speech decoder'],['jointMs','Token scoring'],['selectMs','Token selection'],['speakerFeaturesMs','Speaker preparation'],['speakerMs','Speaker detection (total)'],['speakerInferenceMs','Model computation'],['speakerCacheMs','Speaker cache updates'],['speakerTensorMs','Tensor preparation / output']];
 const number = value => Number.isFinite(value) ? value.toFixed(1) : '—';
-export function Diagnostics({ snapshot, modelProfile, device, threadBudget, onThreadBudget, unloaded, speakerDetection = true }) {
+export function Diagnostics({ recorder, snapshot, modelProfile, device, threadBudget, onThreadBudget, unloaded, speakerDetection = true }) {
+  const [, refresh] = useState(0);
+  function downloadLog(previous) {
+    const log = previous ? recorder.previous : recorder.current;
+    if (!log) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(log,null,2)], {type:'application/json'}));
+    const link = document.createElement('a'); link.href=url; link.download=`scribe-${previous ? 'previous' : 'current'}-run.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url),1000);
+  }
   const workers = snapshot?.workers || [];
   const isolated = Boolean(globalThis.crossOriginIsolated);
   const cores = Math.max(1, navigator.hardwareConcurrency || 1);
@@ -15,6 +24,14 @@ export function Diagnostics({ snapshot, modelProfile, device, threadBudget, onTh
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   return <details className="tool-section diagnostics"><summary>Performance diagnostics</summary>
+    {recorder && <div className="diagnostic-recorder">
+      <p>On-device checkpoints save every 2 seconds while this page is open. The log keeps the start and roughly the last 4 minutes, without audio, names, or caption text. WASM allocation is not total Safari RAM; GPU memory is unavailable.</p>
+      {recorder.previous && <p>Previous run: {new Date(recorder.previous.startedAt).toLocaleString()} · {['running','loading'].includes(recorder.previous.state) ? 'Interrupted or closed without a final checkpoint; this does not prove jetsam.' : recorder.previous.state}</p>}
+      {!recorder.available && <p role="status">Browser storage is unavailable or full. Checkpoints may not survive a reload; download this run now.</p>}
+      <Button variant="outline" disabled={!recorder.previous} onClick={() => downloadLog(true)}>Download previous diagnostic run</Button>{' '}
+      <Button variant="outline" disabled={!recorder.current} onClick={() => downloadLog(false)}>Download current diagnostic run</Button>{' '}
+      <Button variant="ghost" onClick={() => { recorder.clear(); refresh(n=>n+1); }}>Delete diagnostic logs</Button>
+    </div>}
     <p className="input-description">Measurements stay on this device. The report contains timings and browser details, without audio or captions.</p>
     <label htmlFor="thread-budget">CPU thread budget (refresh page to change after loading)</label>
     <select id="thread-budget" data-slot="native-select" value={isolated ? threadBudget : 1} disabled={!unloaded || device === 'webgpu' || !isolated} onChange={e=>onThreadBudget(Number(e.target.value))}>
@@ -29,6 +46,7 @@ export function Diagnostics({ snapshot, modelProfile, device, threadBudget, onTh
         <p>{worker.speechDevice && `Speech: ${worker.speechDevice === 'wasm' ? 'CPU' : 'WebGPU'}. `}{worker.speakerDevice && `Speakers: ${worker.speakerDevice === 'wasm' ? 'CPU' : 'WebGPU'}. `}</p>
         <p>{worker.threads ?? '—'} configured thread(s) · Load: {number(worker.loadMs/1000)} s<br/>
         Pending audio: {number(worker.queuedSeconds)} s · Compute capacity: {number(worker.computeMs ? worker.audioSeconds*1000/worker.computeMs : NaN)}×</p>
+        {worker.memory && <p>Observed WASM allocation: {worker.memory.wasmBytes == null ? 'unavailable' : `${number(worker.memory.wasmBytes / 1048576)} MiB`} · speaker cache arrays: {number(worker.memory.cacheBytes / 1048576)} MiB. Sample age: {number((Date.now() - worker.memory.measuredAt) / 1000)} s.</p>}
         {!!worker.speakerChunkFrames && <p className="input-description">Speaker chunk: {worker.speakerChunkFrames * 80} ms · Lookahead: {worker.speakerLookaheadFrames * 80} ms · Recent history: {number(worker.speakerHistoryFrames * .08)} s · Calls: {worker.metrics.speakerCalls || 0}</p>}
         {worker.speakerRuntimeOptions && <p className="input-description">ONNX memory arena: {worker.speakerRuntimeOptions.enableCpuMemArena ? 'on' : 'off'} · Memory patterns: {worker.speakerRuntimeOptions.enableMemPattern ? 'on' : 'off'}</p>}
         {worker.metrics.wordTiming === 'estimated' && <p className="input-description">Moonshine word times are estimated. Speech phrases are limited to {worker.metrics.maxSegmentSeconds} seconds; {worker.metrics.speechSegments || 0} completed. Decoder limit hits: {worker.metrics.decoderLimitHits || 0}.</p>}

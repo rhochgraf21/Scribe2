@@ -1,3 +1,4 @@
+import { DiagnosticRecorder } from './diagnostic-recorder';
 import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Captions, Mic, Square, Pause, Play, Plus, Minus, ShieldCheck, Settings, X, Maximize, Minimize } from 'lucide-react';
@@ -14,6 +15,8 @@ import { captionDefaults, captionModelEntries, speechOnlyDescription } from './c
 import { InferenceClient } from './inference-client';
 
 export default function BrowserApp() {
+  const [recorder] = useState(() => { let storage; try { storage = localStorage; } catch {} return new DiagnosticRecorder(storage); });
+  const recordingState = useRef({});
   const settingsDialog = useRef();
   const openSettings = () => settingsDialog.current?.showModal();
   const [enteredConversation, setEnteredConversation] = useState(false);
@@ -142,6 +145,14 @@ export default function BrowserApp() {
   const lastDiagnostic = useRef(0);
   const [cpuMode, setCpuMode] = useState(defaults.cpuMode);
   const sizes = [20, 24, 28, 32, 40];
+  recordingState.current = { phase, segmentCount:session.segments.length, transcriptCharacters:session.segments.reduce((n,s) => n + (s.text?.length || 0), 0), pendingSeconds:pending.current / 16000 };
+  function checkpoint(event) { recorder.record(event, worker.current?.diagnostics(), recordingState.current); }
+  useEffect(() => {
+    const timer = setInterval(() => { if (['loading','starting','listening','stopping'].includes(recordingState.current.phase)) checkpoint('sample'); }, 2000);
+    const visibility = () => checkpoint(document.hidden ? 'hidden' : 'visible');
+    document.addEventListener('visibilitychange', visibility);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visibility); };
+  }, [recorder]);
   const live = phase === 'listening';
   async function enumerate() {
     const list = await navigator.mediaDevices.enumerateDevices();
@@ -155,22 +166,26 @@ export default function BrowserApp() {
     setLevel(0);
   }
   function fail(message) {
+    checkpoint('error');
     release(); worker.current?.terminate(); worker.current = null;
     pending.current = 0; setLag(0); setPhase('unloaded'); setError(message); setStatus('Stopped. Load models to try again.');
   }
   useEffect(() => {
     enumerate().catch(() => {});
     navigator.mediaDevices?.addEventListener('devicechange', enumerate);
-    const cleanup = () => { downloadController.current?.abort(); release(); worker.current?.terminate(); };
+    const cleanup = () => { checkpoint('pagehide'); downloadController.current?.abort(); release(); worker.current?.terminate(); };
     window.addEventListener('pagehide', cleanup);
     return () => { cleanup(); window.removeEventListener('pagehide', cleanup); navigator.mediaDevices?.removeEventListener('devicechange', enumerate); };
   }, []);
   function load() {
+    recorder.begin({ modelProfile, speakerDtype, speakerDetection, device:deviceMode, mode:cpuMode, threadBudget });
     setDiagnostics(null); setError(''); setPhase('loading'); setStatus('Loading models into browser memory…');
     worker.current?.terminate();
+    let firstInference = true;
     const next = new InferenceClient({ speakerDetection, mode:cpuMode, device:deviceMode, threadBudget:deviceMode !== 'webgpu' ? threadBudget : 4, jointMode:'logits' }); worker.current = next;
     next.onerror = event => fail(event.message || 'Browser inference worker failed');
     next.onmessage = ({ data }) => {
+      if (['status','ready','stopped','warning'].includes(data.type)) checkpoint(data.type);
       if (data.diagnostics && (data.type !== 'ack' || performance.now() - lastDiagnostic.current > 1000)) { setDiagnostics(data.diagnostics); lastDiagnostic.current = performance.now(); }
       if (data.type === 'status') setStatus(data.message);
       if (data.type === 'ready') { setPhase('ready'); if (data.plan.mode !== 'speech-only') setCpuMode(data.plan.mode); setStatus(`Ready · ${executionLabel} · ${data.plan.mode === 'speech-only' ? 'speech worker' : data.plan.mode === 'parallel' ? 'separate workers' : 'shared worker'}`); }
@@ -179,7 +194,7 @@ export default function BrowserApp() {
       if (data.type === 'captions') {
         setSession(previous => applyCaptionPatch(previous, data));
       }
-      if (data.type === 'ack') { setSpeed(data.elapsedMs && data.audioSeconds ? data.audioSeconds / (data.elapsedMs / 1000) : null); pending.current = Math.max(0, pending.current - data.samples); setLag(pending.current / 16000); }
+      if (data.type === 'ack') { if (firstInference) { checkpoint('first-inference'); firstInference = false; } setSpeed(data.elapsedMs && data.audioSeconds ? data.audioSeconds / (data.elapsedMs / 1000) : null); pending.current = Math.max(0, pending.current - data.samples); setLag(pending.current / 16000); }
       if (data.type === 'stopped') { setPhase('ready'); setStatus(`Conversation ended · ${executionLabel}`); }
     };
     next.postMessage({ type: 'load', speakerDtype, modelProfile, modelFiles, assetBase: new URL('.', document.baseURI).href });
@@ -191,6 +206,7 @@ export default function BrowserApp() {
     } catch (e) { setError(e.message); }
   }
   async function start() {
+    checkpoint('start');
     setPhase('starting'); setError('');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: device ? { exact: device } : undefined, channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
@@ -219,9 +235,10 @@ export default function BrowserApp() {
       await context.resume(); await enumerate();
       setPhase('listening'); setStatus(`Listening · ${executionLabel}`);
       if (!speakerDetection) { setViewMode('flow'); setEnteredConversation(true); setExpanded(true); }
-    } catch (e) { release(); setPhase('ready'); setError(e.message); }
+    } catch (e) { checkpoint('error'); release(); setPhase('ready'); setError(e.message); }
   }
   async function stop() {
+    checkpoint('stop-request');
     setPhase('stopping'); setStatus('Finishing pending captions…');
     const current = capture.current;
     if (current?.node) {
@@ -282,7 +299,7 @@ export default function BrowserApp() {
         <section className="tool-section"><h2 className="tool-heading">Reading comfort</h2><Button variant="outline" disabled={!session.segments.length} onClick={exportText}>Export text</Button><Button variant="outline" aria-pressed={contrast} onClick={() => setContrast(!contrast)}>High contrast</Button><p><label><input type="checkbox" checked={announce} onChange={e => setAnnounce(e.target.checked)}/> Announce captions to screen readers</label></p><Button variant="ghost" disabled={phase !== 'ready' && phase !== 'unloaded'} onClick={() => { setSession({ id: crypto.randomUUID(), segments: [] }); setHeld(null); setHolding(false); }}>Clear conversation</Button></section>
         <section className="privacy-card"><ShieldCheck size={20} aria-hidden="true"/><div><h2>Audio stays in this browser</h2><p>No inference server, recording, or audio uploads. Refresh clears the conversation. Models are imported or downloaded on request; app code loads from this website. Only model files may be saved, never conversations.</p></div></section>
         <section className="tool-section"><label htmlFor="execution-device">Processing</label><select id="execution-device" data-slot="native-select" value={deviceMode} disabled={phase !== 'unloaded'} onChange={event => setDeviceMode(event.target.value)}><option value="hybrid" disabled={!speakerDetection}>CPU speech + WebGPU speakers (shared worker)</option><option value="webgpu" disabled={modelProfiles[modelProfile].cpuOnly}>WebGPU speech + speakers</option><option value="wasm">CPU only</option></select><p className="input-description">{!speakerDetection ? 'Only speech recognition is loaded. Speaker detection is off.' : deviceMode === 'hybrid' ? 'Speech uses the CPU and speaker detection uses WebGPU in one shared worker. Requires hardware WebGPU; choose CPU only if unavailable.' : deviceMode === 'webgpu' ? 'Speech and speaker detection use the GPU; token decoding uses the CPU.' : 'Speech and speaker detection use the CPU. Phone speed and memory use are not yet validated.'} CPU uses one thread without cross-origin isolation.</p><label htmlFor="cpu-mode">Worker scheduling</label><select id="cpu-mode" data-slot="native-select" value={deviceMode === 'hybrid' ? 'sequential' : deviceMode === 'webgpu' ? 'parallel' : cpuMode} disabled={!speakerDetection || phase !== 'unloaded' || deviceMode !== 'wasm'} onChange={event => setCpuMode(event.target.value)}><option value="sequential">Shared worker</option><option value="parallel">Separate workers (experimental)</option></select><p className="input-description">{speakerDetection ? 'Mixed CPU/WebGPU uses one shared worker. All-WebGPU uses separate workers. CPU-only scheduling can be chosen before loading models.' : 'Speech-only captions use one speech worker. Refresh to change speaker detection after loading.'}</p></section>
-        <Diagnostics speakerDetection={speakerDetection} snapshot={diagnostics} modelProfile={modelProfile} device={deviceMode} threadBudget={threadBudget} onThreadBudget={setThreadBudget} unloaded={phase === 'unloaded'}/>
+        <Diagnostics recorder={recorder} speakerDetection={speakerDetection} snapshot={diagnostics} modelProfile={modelProfile} device={deviceMode} threadBudget={threadBudget} onThreadBudget={setThreadBudget} unloaded={phase === 'unloaded'}/>
         <p className="small-note">Experimental · English captions · {modelProfiles[modelProfile].label}{speakerDetection ? ` + diarization ${speakerDtype}.` : ' · speech only.'} Processing speed depends on the device. {speed !== null && <span id="cpu-speed">Processing: {speed.toFixed(2)}× real time (1× keeps pace).</span>}</p>
       </aside></dialog>
     </main>

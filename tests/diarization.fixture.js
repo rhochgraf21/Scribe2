@@ -11,6 +11,7 @@ window.runDiarization = async ({ dtype, device = 'wasm', pcmBase64, hybrid = fal
  const report = { dtype, device:hybrid ? 'hybrid' : device, logits:[], frames:0, finite:true };
  worker.onerror = e => { failure = e.message; ready(); stopped(); pending?.(); };
  worker.onmessage = ({data}) => {
+  if (data.type === 'memory') report.observedMemory = data.memory;
   if (data.type === 'fixture-ready') fixtureReady();
   if (data.type === 'wasm-memory') report.peakWasmBytes = Math.max(report.peakWasmBytes || 0, data.bytes);
   if (data.type === 'error') { failure = data.message; ready(); stopped(); pending?.(); }
@@ -46,6 +47,7 @@ window.runDiarization = async ({ dtype, device = 'wasm', pcmBase64, hybrid = fal
   if (hybrid) { report.frames = report.metrics.speakerOutputValues / 8; report.finite = report.metrics.speakerOutputsFinite; }
   if (report.historyFrames !== 125) throw Error('Expected 10-second history');
   if (hybrid && (!report.captionUpdates || report.speechDevice !== 'wasm' || report.speakerDevice !== 'webgpu')) throw Error('Mixed caption processing failed');
+  if (!(report.observedMemory?.wasmBytes > 0)) throw Error('Production WASM probe did not observe memory');
   report.wallMs = performance.now()-begin;
   return report;
  } finally { worker.terminate(); }

@@ -1,3 +1,4 @@
+import { wasmMemorySnapshot } from './memory-probe.js';
 import { createOperatorProfile } from './operator-profile.js';
 import * as ort from 'onnxruntime-web/webgpu';
 import { env } from '../../vendor/transformers/src/env.js';
@@ -38,6 +39,7 @@ env.allowLocalModels = true;
 env.localModelPath = '/models/';
 env.useBrowserCache = false;
 env.useFSCache = false;
+let memoryStage = 'worker-start';
 let asr, model, processor, cache = null, pcm = new Float32Array(), base = 0, cursor = 0;
 let role = 'both', lastWords = [], threads = 1;
 let speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
@@ -46,7 +48,14 @@ let loadMs = 0, speakerProfiling = false, operatorProfile, restoreProfileConsole
 const metrics = () => ({ ...asr?.metrics, ...speakerMetrics });
 let updates = new CaptionUpdates(), totalSamples = 0, elapsedMs = 0, active = false;
 const send = (type, value = {}) => postMessage({ type, ...value });
-const status = message => send('status', { message });
+const status = message => { send('status', { message }); memoryCheckpoint(); };
+function memoryCheckpoint() {
+  send('memory', { memory: { stage:memoryStage, ...wasmMemorySnapshot(), measuredAt:Date.now(), pcmBytes:pcm.byteLength,
+    cacheBytes:(cache?.embeds?.byteLength || 0) + (cache?.probs?.byteLength || 0) + (cache?.fifo?.byteLength || 0),
+    cacheFrames:cache?.num_cache_frames || 0, fifoFrames:cache?.num_fifo_frames || 0,
+    wordCount:asr?.words?.length || 0, speakerCalls:speakerMetrics.speakerCalls } });
+}
+setInterval(memoryCheckpoint, 2000);
 function reset() {
   speakerMetrics = { speakerFeaturesMs: 0, speakerMs: 0, speakerCalls: 0, speakerInferenceMs: 0, speakerCacheMs: 0, speakerTensorMs: 0 };
   if (compareSpeakerOutputs) { speakerMetrics.speakerOutputHash = 2166136261; speakerMetrics.speakerOutputValues = 0; speakerMetrics.speakerOutputsFinite = true; }
@@ -135,6 +144,7 @@ self.onmessage = ({ data }) => {
         runtime.wasm.wasmPaths = new URL('ort/', assetBase).href; runtime.wasm.numThreads = threads; runtime.wasm.proxy = false;
       }
       if (role !== 'diar') {
+        memoryStage = 'speech-load'; memoryCheckpoint();
         asr = profile.startsWith('moonshine-') ? new MoonshineBrowserASR() : new NemotronBrowserASR();
         await asr.load(status, { fixedShapes: data.fixedShapes !== false, profile, device: speechDevice, threads, readModel: name => readModelBuffer(modelFiles[(profile.startsWith('moonshine-') ? `${profile}/` : profile === 'int8-dynamic' ? 'asr-int8/' : 'asr/') + name]), wasmPaths: new URL('ort/', assetBase).href, jointMode: data.jointMode || 'argmax' });
       }
@@ -155,6 +165,7 @@ self.onmessage = ({ data }) => {
           }
           restoreProfileConsole = () => Object.assign(console, originals);
         }
+        memoryStage = 'speaker-load';
         status('Loading local speaker model');
         processor = await Nemotron3DiarizationProcessor.from_pretrained('diar', { local_files_only: true });
         const chunkFrames = data.speakerChunkFrames ?? 11;
@@ -172,9 +183,10 @@ self.onmessage = ({ data }) => {
           fifo_length: historyFrames, speaker_cache_update_period: historyFrames - 42 };
       }
       if (usesGPU && ort.env.webgpu.device) ort.env.webgpu.device.lost.then(info => { active = false; send('error', { message: `GPU device lost: ${info.message || info.reason}. Reload models or choose CPU.` }); });
+      memoryStage = 'ready'; memoryCheckpoint();
       loadMs = performance.now() - loadStarted;
       send('ready', { threads, role, device, speechDevice: role === 'diar' ? undefined : speechDevice, speakerDevice: role === 'asr' ? undefined : speakerDevice, loadMs, speakerRuntimeOptions, speakerChunkFrames: processor ? processor.num_mel_frames_per_step / processor.subsampling_factor : undefined, speakerLookaheadFrames: processor ? 4 : undefined, speakerHistoryFrames: model?.config.streaming_config.fifo_length });
-    } else if (data.type === 'start') reset();
+    } else if (data.type === 'start') { reset(); memoryStage = 'inference'; memoryCheckpoint(); }
     else if (data.type === 'audio' && active) {
       const started = performance.now();
       const samples = new Float32Array(data.samples);
@@ -200,7 +212,7 @@ self.onmessage = ({ data }) => {
         restoreProfileConsole?.();
         send('speaker-profile', { profile: operatorProfile.snapshot() });
       }
-      pcm = new Float32Array(); cache = null; active = false; send('stopped', { elapsedMs, metrics: metrics(), audioSeconds: totalSamples / 16000 });
+      pcm = new Float32Array(); cache = null; active = false; memoryStage = 'stopped'; memoryCheckpoint(); send('stopped', { elapsedMs, metrics: metrics(), audioSeconds: totalSamples / 16000 });
     }
   }).catch(error => { active = false; pcm = new Float32Array(); cache = null; send('error', { message: error.message || String(error) }); });
 };

@@ -36,7 +36,7 @@ export class InferenceClient {
       capturedSeconds: this.sentSamples / 16000,
       workers: this.members.map(m => ({role:m.role, disabled:!!m.disabled, threads:m.threads, speechDevice:m.speechDevice, speakerDevice:m.speakerDevice,
         speakerRuntimeOptions:m.speakerRuntimeOptions, speakerHistoryFrames:m.speakerHistoryFrames, speakerChunkFrames:m.speakerChunkFrames, speakerLookaheadFrames:m.speakerLookaheadFrames,
-        loadMs:m.loadMs, audioSeconds:m.processed/16000, computeMs:m.elapsedMs,
+        memory:m.memory, loadMs:m.loadMs, audioSeconds:m.processed/16000, computeMs:m.elapsedMs,
         queuedSeconds:Math.max(0,(this.sentSamples-m.processed)/16000), metrics:m.metrics || {}})),
     };
   }
@@ -44,6 +44,7 @@ export class InferenceClient {
   fail(message) { this.emit({ type:'error', message }); this.terminate(); }
   receive(member,data) {
     if (this.closed || member.disabled) return;
+    if (data.type === 'memory') { member.memory = data.memory; return; }
     if (data.type === 'error') return this.fail(data.message);
     if (data.type === 'ready') {
       member.speechDevice = data.speechDevice; member.speakerDevice = data.speakerDevice;
