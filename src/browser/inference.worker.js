@@ -183,12 +183,13 @@ self.onmessage = ({ data }) => {
         processor.set_streaming_mode('buffered');
         model = await Nemotron3DiarizationForAudioFrameClassification.from_pretrained('diar', { device: speakerDevice, dtype: speakerDtype, local_files_only: true,
           session_options: { ...speakerRuntimeOptions, ...(data.speakerFixedBatch ? { freeDimensionOverrides: { batch_size: 1 } } : {}) } });
-        const historyFrames = data.speakerHistoryFrames ?? 125;
-        if (![125, 150, 200, 264].includes(historyFrames)) throw Error('Invalid speaker history size');
-        // Preserve the original 42-frame overlap when moving old FIFO frames
-        // into the separate, unchanged speaker-identity cache.
+        const historyFrames = data.speakerHistoryFrames ?? 13;
+        if (![13, 125, 150, 200, 264].includes(historyFrames)) throw Error('Invalid speaker history size');
+        // Temporary GPU-memory experiment: 13 frames = 1.04 seconds.
+        // Move one chunk on overflow for this short window; keep the existing
+        // 42-frame overlap policy for normal windows. Identity cache unchanged.
         model.config.streaming_config = { ...model.config.streaming_config,
-          fifo_length: historyFrames, speaker_cache_update_period: historyFrames - 42 };
+          fifo_length: historyFrames, speaker_cache_update_period: historyFrames === 13 ? chunkFrames : historyFrames - 42 };
       }
       if (usesGPU && ort.env.webgpu.device) ort.env.webgpu.device.lost.then(info => { active = false; send('error', { message: `GPU device lost: ${info.message || info.reason}. Reload models or choose CPU.` }); });
       memoryStage = 'ready'; memoryCheckpoint();

@@ -45,7 +45,7 @@ window.runDiarization = async ({ dtype, device = 'wasm', pcmBase64, hybrid = fal
   }
   worker.postMessage({type:'stop'}); await finished; check();
   if (hybrid) { report.frames = report.metrics.speakerOutputValues / 8; report.finite = report.metrics.speakerOutputsFinite; }
-  if (report.historyFrames !== 125) throw Error('Expected 10-second history');
+  if (report.historyFrames !== 13) throw Error('Expected temporary 1.04-second history');
   if (hybrid && (!report.captionUpdates || report.speechDevice !== 'wasm' || report.speakerDevice !== 'webgpu')) throw Error('Mixed caption processing failed');
   if (!(report.observedMemory?.wasmBytes > 0)) throw Error('Production WASM probe did not observe memory');
   report.wallMs = performance.now()-begin;
